@@ -160,18 +160,25 @@ def _bc_cost(bc_id, start, end, token):
 def get_spend(bc_id, adv_ids, start, end, token):
     """Lay spend tung tai khoan. Thu lan luot:
     1) Bao cao cap BC  2) API chi phi cap BC  3) Bao cao tung tai khoan (can duoc chi dinh)."""
-    for dims in (["advertiser_id", "stat_time_day"], ["advertiser_id"]):
-        try:
-            params = {"report_type": "BC", "bc_id": bc_id, "dimensions": dims,
-                      "metrics": ["spend"], "start_date": start, "end_date": end}
-            rows = _parse_report(tt_pages("/report/integrated/get/", params, token, page_size=1000))
-            for r in rows:
-                if not r["date"]:
-                    r["date"] = end
-            print(f"   -> lay spend bang bao cao cap BC ({','.join(dims)})")
-            return rows
-        except RuntimeError as e:
-            print(f"   (bao cao BC {dims}: {e})")
+    # Bao cao cap BC: khong can chi dinh tung tai khoan. TikTok chi cho dimensions=[advertiser_id],
+    # nen lay tung ngay mot de co spend theo ngay.
+    try:
+        d0 = dt.date.fromisoformat(start)
+        d1 = dt.date.fromisoformat(end)
+        rows = []
+        day = d0
+        while day <= d1:
+            ds = str(day)
+            params = {"report_type": "BC", "bc_id": bc_id, "dimensions": ["advertiser_id"],
+                      "metrics": ["spend"], "start_date": ds, "end_date": ds}
+            for r in _parse_report(tt_pages("/report/integrated/get/", params, token, page_size=1000)):
+                r["date"] = ds
+                rows.append(r)
+            day += dt.timedelta(days=1)
+        print("   -> lay spend bang bao cao cap BC (theo tung ngay)")
+        return rows
+    except RuntimeError as e:
+        print(f"   (bao cao BC: {e})")
     try:
         rows = _bc_cost(bc_id, start, end, token)
         if rows:
