@@ -118,30 +118,81 @@ def _basic_report(adv_ids, start, end, token):
     return _parse_report(tt_pages("/report/integrated/get/", params, token, page_size=1000))
 
 
+def _bc_cost(bc_id, start, end, token):
+    """Chi phi tung tai khoan qua API cap BC (khong can duoc chi dinh vao tung tai khoan).
+    Thu nhieu dang tham so vi tai lieu TikTok khac nhau giua cac phien ban."""
+    tries = [
+        {"bc_id": bc_id, "filtering": {"start_date": start, "end_date": end}},
+        {"bc_id": bc_id, "start_date": start, "end_date": end},
+        {"bc_id": bc_id, "filtering": {"start_time": start + " 00:00:00", "end_time": end + " 23:59:59"}},
+    ]
+    last = None
+    for params in tries:
+        try:
+            data = tt_get("/bc/account/cost/get/", {**params, "page": 1, "page_size": 50}, token)
+        except RuntimeError as e:
+            last = e
+            continue
+        items = data.get("list") or data.get("cost_list") or data.get("advertiser_cost_list") or []
+        if items:
+            print("   [cost/get] mau du lieu:", json.dumps(items[0], ensure_ascii=False)[:400])
+        rows = []
+        page, total = 1, (data.get("page_info") or {}).get("total_page", 1) or 1
+        while True:
+            for it in items:
+                adv = str(it.get("advertiser_id") or it.get("account_id") or "")
+                amt = None
+                for k in ("cost", "amount", "total_cost", "spend", "cash_cost"):
+                    if it.get(k) not in (None, ""):
+                        amt = float(it.get(k))
+                        break
+                if adv and amt is not None:
+                    d = str(it.get("date") or it.get("stat_time_day") or end)[:10]
+                    rows.append({"advertiser_id": adv, "date": d, "spend": amt})
+            if page >= total:
+                break
+            page += 1
+            items = (tt_get("/bc/account/cost/get/", {**params, "page": page, "page_size": 50}, token).get("list") or [])
+        return rows
+    raise RuntimeError(f"cost/get khong dung duoc: {last}")
+
+
 def get_spend(bc_id, adv_ids, start, end, token):
-    """Lay spend theo tung tai khoan + tung ngay. Thu bao cao cap BC truoc,
-    neu BC khong ho tro thi lay bao cao BASIC theo tung nhom 5 tai khoan."""
+    """Lay spend tung tai khoan. Thu lan luot:
+    1) Bao cao cap BC  2) API chi phi cap BC  3) Bao cao tung tai khoan (can duoc chi dinh)."""
+    for dims in (["advertiser_id", "stat_time_day"], ["advertiser_id"]):
+        try:
+            params = {"report_type": "BC", "bc_id": bc_id, "dimensions": dims,
+                      "metrics": ["spend"], "start_date": start, "end_date": end}
+            rows = _parse_report(tt_pages("/report/integrated/get/", params, token, page_size=1000))
+            for r in rows:
+                if not r["date"]:
+                    r["date"] = end
+            print(f"   -> lay spend bang bao cao cap BC ({','.join(dims)})")
+            return rows
+        except RuntimeError as e:
+            print(f"   (bao cao BC {dims}: {e})")
     try:
-        params = {"report_type": "BC", "bc_id": bc_id,
-                  "dimensions": ["advertiser_id", "stat_time_day"], "metrics": ["spend"],
-                  "start_date": start, "end_date": end}
-        return _parse_report(tt_pages("/report/integrated/get/", params, token, page_size=1000))
-    except RuntimeError:
-        pass
+        rows = _bc_cost(bc_id, start, end, token)
+        if rows:
+            print("   -> lay spend bang API chi phi cap BC")
+            return rows
+        print("   (API chi phi cap BC tra ve rong)")
+    except RuntimeError as e:
+        print(f"   ({e})")
     rows, failed = [], []
     for i in range(0, len(adv_ids), 5):
         group = adv_ids[i:i + 5]
         try:
             rows += _basic_report(group, start, end, token)
         except RuntimeError:
-            for a in group:  # thu tung tai khoan rieng
+            for a in group:
                 try:
                     rows += _basic_report([a], start, end, token)
-                except RuntimeError as e:
+                except RuntimeError:
                     failed.append(a)
-                    print(f"   - Bo qua tai khoan {a}: {e}")
     if failed:
-        print(f"   ({len(failed)} tai khoan chua cap quyen bao cao cho app)")
+        print(f"   ({len(failed)}/{len(adv_ids)} tai khoan chua chi dinh cho user -> chi lay duoc so du)")
     return rows
 
 
@@ -296,6 +347,16 @@ def main():
                 f[F_BALANCE] = b.get("balance")
                 f[F_BUDGET] = b.get("budget")
             rows.append(f)
+        have = {r["advertiser_id"] for r in spend if r["date"] == str(end)}
+        for adv, b in bal.items():  # tai khoan chua co spend -> van ghi so du / budget
+            if adv in have:
+                continue
+            rows.append({
+                F_BC_NAME: bc["name"], F_BC_ID: bc["bc_id"], F_ADV_ID: adv,
+                F_ADV_NAME: b.get("name") or adv, F_DATE: str(end), F_SPEND: 0,
+                F_CURRENCY: b.get("currency", ""), F_UPDATED: now_ms,
+                F_BALANCE: b.get("balance"), F_BUDGET: b.get("budget"),
+            })
 
     lark_ready = all(os.getenv(k) for k in ("LARK_APP_ID", "LARK_APP_SECRET", "LARK_BASE_TOKEN", "LARK_TABLE_ID"))
     if dry or not lark_ready:
