@@ -357,7 +357,10 @@ def process_bc(bc, start, end, token, with_balance):
 def main():
     from concurrent.futures import ThreadPoolExecutor, as_completed
     dry = "--dry-run" in sys.argv
-    token = env("TT_ACCESS_TOKEN")
+    env("TT_ACCESS_TOKEN")
+    # Nhieu tai khoan TikTok (nhieu email): TT_ACCESS_TOKEN, TT_ACCESS_TOKEN_2 ... TT_ACCESS_TOKEN_10
+    tokens = [os.getenv("TT_ACCESS_TOKEN")] + [os.getenv(f"TT_ACCESS_TOKEN_{i}") for i in range(2, 11)]
+    tokens = [t.strip() for t in tokens if t and t.strip()]
     days = max(1, min(30, int(os.getenv("DAYS_BACK", "2"))))
     workers = max(1, int(os.getenv("PARALLEL", "5")))
     with_balance = os.getenv("FETCH_BALANCE", "1") == "1"
@@ -367,12 +370,24 @@ def main():
     dates = [str(start + dt.timedelta(days=i)) for i in range(days)]
     now_ms = int(dt.datetime.now(VN_TZ).timestamp() * 1000)
     t0 = time.time()
-    bcs = get_bcs(token)
-    print(f"Dong bo {start} -> {end} | {len(bcs)} BC | chay song song {workers} BC")
+    bcs, bc_seen = [], set()
+    for i, tk in enumerate(tokens, 1):
+        try:
+            found = get_bcs(tk)
+        except RuntimeError as e:
+            print(f"[TOKEN {i}] loi: {e}")
+            continue
+        new = [b for b in found if b["bc_id"] not in bc_seen]
+        for b in new:
+            b["token"] = tk
+            bc_seen.add(b["bc_id"])
+        bcs += new
+        print(f"[TOKEN {i}] thay {len(found)} BC ({len(new)} BC moi)")
+    print(f"Dong bo {start} -> {end} | {len(bcs)} BC | {len(tokens)} token | chay song song {workers} BC")
 
     rows, seen, summary = [], set(), []
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(process_bc, bc, str(start), str(end), token, with_balance): bc for bc in bcs}
+        futs = {ex.submit(process_bc, bc, str(start), str(end), bc["token"], with_balance): bc for bc in bcs}
         for fu in as_completed(futs):
             bc = futs[fu]
             try:
