@@ -21,6 +21,8 @@ import time
 
 import requests
 
+sys.stdout.reconfigure(line_buffering=True)  # in log ngay lap tuc tren GitHub
+
 TT_API = "https://business-api.tiktok.com/open_api/v1.3"
 LARK_API = os.getenv("LARK_DOMAIN", "https://open.larksuite.com").rstrip("/") + "/open-apis"
 VN_TZ = dt.timezone(dt.timedelta(hours=7))
@@ -58,6 +60,8 @@ def tt_get(path, params, token):
         if j.get("code") == 0:
             return j.get("data") or {}
         last = j
+        if j.get("code") in (40001, 40002, 40100, 40105):
+            break  # loi tham so / quyen: khong can thu lai
         time.sleep(2 * (attempt + 1))
     raise RuntimeError(f"TikTok {path} loi: {last.get('code')} - {last.get('message')}")
 
@@ -85,17 +89,9 @@ def get_bcs(token):
     return bcs
 
 
-def get_spend(bc_id, start, end, token):
-    params = {
-        "report_type": "BC",
-        "bc_id": bc_id,
-        "dimensions": ["advertiser_id", "stat_time_day"],
-        "metrics": ["spend"],
-        "start_date": start,
-        "end_date": end,
-    }
+def _parse_report(items):
     rows = []
-    for item in tt_pages("/report/integrated/get/", params, token, page_size=1000):
+    for item in items:
         d = item.get("dimensions") or {}
         m = item.get("metrics") or {}
         rows.append({
@@ -103,6 +99,49 @@ def get_spend(bc_id, start, end, token):
             "date": str(d.get("stat_time_day", ""))[:10],
             "spend": float(m.get("spend") or 0),
         })
+    return rows
+
+
+def _basic_report(adv_ids, start, end, token):
+    params = {
+        "report_type": "BASIC",
+        "data_level": "AUCTION_ADVERTISER",
+        "dimensions": ["advertiser_id", "stat_time_day"],
+        "metrics": ["spend"],
+        "start_date": start,
+        "end_date": end,
+    }
+    if len(adv_ids) == 1:
+        params["advertiser_id"] = adv_ids[0]
+    else:
+        params["advertiser_ids"] = adv_ids
+    return _parse_report(tt_pages("/report/integrated/get/", params, token, page_size=1000))
+
+
+def get_spend(bc_id, adv_ids, start, end, token):
+    """Lay spend theo tung tai khoan + tung ngay. Thu bao cao cap BC truoc,
+    neu BC khong ho tro thi lay bao cao BASIC theo tung nhom 5 tai khoan."""
+    try:
+        params = {"report_type": "BC", "bc_id": bc_id,
+                  "dimensions": ["advertiser_id", "stat_time_day"], "metrics": ["spend"],
+                  "start_date": start, "end_date": end}
+        return _parse_report(tt_pages("/report/integrated/get/", params, token, page_size=1000))
+    except RuntimeError:
+        pass
+    rows, failed = [], []
+    for i in range(0, len(adv_ids), 5):
+        group = adv_ids[i:i + 5]
+        try:
+            rows += _basic_report(group, start, end, token)
+        except RuntimeError:
+            for a in group:  # thu tung tai khoan rieng
+                try:
+                    rows += _basic_report([a], start, end, token)
+                except RuntimeError as e:
+                    failed.append(a)
+                    print(f"   - Bo qua tai khoan {a}: {e}")
+    if failed:
+        print(f"   ({len(failed)} tai khoan chua cap quyen bao cao cho app)")
     return rows
 
 
@@ -235,8 +274,8 @@ def main():
     rows = []
     for bc in get_bcs(token):
         try:
-            spend = get_spend(bc["bc_id"], str(start), str(end), token)
             bal = get_balances(bc["bc_id"], token)
+            spend = get_spend(bc["bc_id"], list(bal), str(start), str(end), token)
         except RuntimeError as e:
             print(f"[BO QUA] BC {bc['bc_id']} ({bc['name']}): {e}")
             continue
@@ -258,7 +297,12 @@ def main():
                 f[F_BUDGET] = b.get("budget")
             rows.append(f)
 
-    if dry:
+    lark_ready = all(os.getenv(k) for k in ("LARK_APP_ID", "LARK_APP_SECRET", "LARK_BASE_TOKEN", "LARK_TABLE_ID"))
+    if dry or not lark_ready:
+        if not lark_ready:
+            print("[CHUA GHI VAO BASE] Thieu secret Lark -> chi hien du lieu xem truoc:")
+        for f in rows[:50]:
+            print(f"{f[F_DATE]} | {f[F_BC_NAME]} | {f[F_ADV_NAME]} | spend {f[F_SPEND]} {f[F_CURRENCY]}")
         print(json.dumps(rows[:20], ensure_ascii=False, indent=2))
         print(f"(dry-run) Tong {len(rows)} dong, khong ghi vao Base.")
         return
