@@ -15,6 +15,15 @@ jobs:
       - run: python tiktok_bc_spend_to_lark.py
         env:
           TT_ACCESS_TOKEN: ${{ secrets.TT_ACCESS_TOKEN }}
+          TT_ACCESS_TOKEN_2: ${{ secrets.TT_ACCESS_TOKEN_2 }}
+          TT_ACCESS_TOKEN_3: ${{ secrets.TT_ACCESS_TOKEN_3 }}
+          TT_ACCESS_TOKEN_4: ${{ secrets.TT_ACCESS_TOKEN_4 }}
+          TT_ACCESS_TOKEN_5: ${{ secrets.TT_ACCESS_TOKEN_5 }}
+          TT_ACCESS_TOKEN_6: ${{ secrets.TT_ACCESS_TOKEN_6 }}
+          TT_ACCESS_TOKEN_7: ${{ secrets.TT_ACCESS_TOKEN_7 }}
+          TT_ACCESS_TOKEN_8: ${{ secrets.TT_ACCESS_TOKEN_8 }}
+          TT_ACCESS_TOKEN_9: ${{ secrets.TT_ACCESS_TOKEN_9 }}
+          TT_ACCESS_TOKEN_10: ${{ secrets.TT_ACCESS_TOKEN_10 }}
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
           LARK_BASE_TOKEN: ${{ secrets.LARK_BASE_TOKEN }}
