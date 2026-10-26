@@ -247,6 +247,13 @@ class Lark:
                   "Content-Type": "application/json; charset=utf-8"}
         self.base = f"{LARK_API}/bitable/v1/apps/{env('LARK_BASE_TOKEN')}/tables/{env('LARK_TABLE_ID')}"
         self.types = self._field_types()
+        if F_ADV_ID not in self.types:  # tu tao cot Advertiser ID de chong trung chinh xac
+            try:
+                self._call("POST", self.base + "/fields", {"field_name": F_ADV_ID, "type": 1})
+                self.types[F_ADV_ID] = 1
+                print(f"Da tu tao cot '{F_ADV_ID}' trong Base.")
+            except RuntimeError as e:
+                print(f"[GOI Y] Khong tao duoc cot '{F_ADV_ID}': {e}")
 
     def _call(self, method, url, body=None, params=None):
         for attempt in range(4):
@@ -298,20 +305,37 @@ class Lark:
             d = cell_text(d)[:10]
         return f"{bc}|{acc}|{d}"
 
-    def existing(self):
+    def _scan(self, body):
         keys, token = {}, None
-        names = [n for n in (F_BC_ID, F_ADV_ID, F_ADV_NAME, F_DATE) if n in self.types]
         while True:
             p = {"page_size": 500}
             if token:
                 p["page_token"] = token
-            data = self._call("POST", self.base + "/records/search", {"field_names": names}, p)
+            data = self._call("POST", self.base + "/records/search", body, p)
             for it in data.get("items") or []:
-                keys[self.key_of(it.get("fields") or {})] = it["record_id"]
+                fr = it.get("fields") or {}
+                keys[self.key_of(fr)] = it["record_id"]
+                # them khoa theo Ten Tk cho cac dong cu chua co Advertiser ID
+                d = fr.get(F_DATE)
+                d = ms_to_date(d) if isinstance(d, (int, float)) else cell_text(d)[:10]
+                keys.setdefault(f"{cell_text(fr.get(F_BC_ID))}|{cell_text(fr.get(F_ADV_NAME))}|{d}", it["record_id"])
             if not data.get("has_more"):
                 break
             token = data.get("page_token")
         return keys
+
+    def existing(self, dates):
+        """Chi doc cac dong thuoc nhung ngay dang dong bo (nhanh, khong doc ca bang)."""
+        names = [n for n in (F_BC_ID, F_ADV_ID, F_ADV_NAME, F_DATE) if n in self.types]
+        if self.types.get(F_DATE) == 5:
+            conds = [{"field_name": F_DATE, "operator": "is", "value": ["ExactDate", str(date_to_ms(d))]} for d in dates]
+        else:
+            conds = [{"field_name": F_DATE, "operator": "is", "value": [d]} for d in dates]
+        try:
+            return self._scan({"field_names": names, "filter": {"conjunction": "or", "conditions": conds}})
+        except RuntimeError as e:
+            print(f"   (loc theo ngay loi: {e} -> doc ca bang)")
+            return self._scan({"field_names": names})
 
     def batch(self, action, records):
         for i in range(0, len(records), 500):
@@ -319,78 +343,94 @@ class Lark:
 
 
 # ----------------------------- Main -----------------------------
+def process_bc(bc, start, end, token, with_balance):
+    bal = {}
+    if with_balance:
+        try:
+            bal = get_balances(bc["bc_id"], token)
+        except RuntimeError as e:
+            print(f"   [{bc['name']}] khong lay duoc so du ({e}) -> van lay spend")
+    spend = get_spend(bc["bc_id"], list(bal), start, end, token)
+    return bal, spend
+
+
 def main():
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     dry = "--dry-run" in sys.argv
     token = env("TT_ACCESS_TOKEN")
-    days = max(1, min(30, int(os.getenv("DAYS_BACK", "7"))))
+    days = max(1, min(30, int(os.getenv("DAYS_BACK", "2"))))
+    workers = max(1, int(os.getenv("PARALLEL", "5")))
+    with_balance = os.getenv("FETCH_BALANCE", "1") == "1"
     today = dt.datetime.now(VN_TZ).date()
     end = today - dt.timedelta(days=1)
     start = end - dt.timedelta(days=days - 1)
+    dates = [str(start + dt.timedelta(days=i)) for i in range(days)]
     now_ms = int(dt.datetime.now(VN_TZ).timestamp() * 1000)
-    print(f"Dong bo tu {start} den {end}")
+    t0 = time.time()
+    bcs = get_bcs(token)
+    print(f"Dong bo {start} -> {end} | {len(bcs)} BC | chay song song {workers} BC")
 
-    rows = []
-    for bc in get_bcs(token):
-        try:
-            bal = get_balances(bc["bc_id"], token)
-            spend = get_spend(bc["bc_id"], list(bal), str(start), str(end), token)
-        except RuntimeError as e:
-            print(f"[BO QUA] BC {bc['bc_id']} ({bc['name']}): {e}")
-            continue
-        print(f"BC {bc['name']} ({bc['bc_id']}): {len(spend)} dong spend, {len(bal)} tai khoan")
-        for r in spend:
-            b = bal.get(r["advertiser_id"], {})
-            f = {
-                F_BC_NAME: bc["name"],
-                F_BC_ID: bc["bc_id"],
-                F_ADV_ID: r["advertiser_id"],
-                F_ADV_NAME: b.get("name") or r["advertiser_id"],
-                F_DATE: r["date"],
-                F_SPEND: round(r["spend"], 2),
-                F_CURRENCY: b.get("currency", ""),
-                F_UPDATED: now_ms,
-            }
-            if r["date"] == str(end):  # so du/budget hien tai -> gan vao dong ngay moi nhat
-                f[F_BALANCE] = b.get("balance")
-                f[F_BUDGET] = b.get("budget")
-            rows.append(f)
-        have = {r["advertiser_id"] for r in spend if r["date"] == str(end)}
-        for adv, b in bal.items():  # tai khoan chua co spend -> van ghi so du / budget
-            if adv in have:
+    rows, seen, summary = [], set(), []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(process_bc, bc, str(start), str(end), token, with_balance): bc for bc in bcs}
+        for fu in as_completed(futs):
+            bc = futs[fu]
+            try:
+                bal, spend = fu.result()
+            except Exception as e:
+                print(f"[BO QUA] BC {bc['bc_id']} ({bc['name']}): {e}")
                 continue
-            rows.append({
-                F_BC_NAME: bc["name"], F_BC_ID: bc["bc_id"], F_ADV_ID: adv,
-                F_ADV_NAME: b.get("name") or adv, F_DATE: str(end), F_SPEND: 0,
-                F_CURRENCY: b.get("currency", ""), F_UPDATED: now_ms,
-                F_BALANCE: b.get("balance"), F_BUDGET: b.get("budget"),
-            })
+            total_end = 0.0
+            n = 0
+            for r in spend:
+                if r["spend"] <= 0:  # chi ghi tai khoan co tieu tien
+                    continue
+                key = (bc["bc_id"], r["advertiser_id"], r["date"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                b = bal.get(r["advertiser_id"], {})
+                f = {
+                    F_BC_NAME: bc["name"], F_BC_ID: bc["bc_id"], F_ADV_ID: r["advertiser_id"],
+                    F_ADV_NAME: b.get("name") or r["advertiser_id"], F_DATE: r["date"],
+                    F_SPEND: round(r["spend"], 2), F_CURRENCY: b.get("currency", ""), F_UPDATED: now_ms,
+                }
+                if r["date"] == str(end):
+                    f[F_BALANCE] = b.get("balance")
+                    f[F_BUDGET] = b.get("budget")
+                    total_end += r["spend"]
+                rows.append(f)
+                n += 1
+            summary.append((bc["name"], n, total_end))
+            print(f"BC {bc['name']}: {n} dong co spend | tong spend {end}: {total_end:,.2f}")
 
+    print(f"Lay du lieu TikTok xong sau {time.time() - t0:.0f}s, tong {len(rows)} dong.")
     lark_ready = all(os.getenv(k) for k in ("LARK_APP_ID", "LARK_APP_SECRET", "LARK_BASE_TOKEN", "LARK_TABLE_ID"))
     if dry or not lark_ready:
         if not lark_ready:
             print("[CHUA GHI VAO BASE] Thieu secret Lark -> chi hien du lieu xem truoc:")
         for f in rows[:50]:
             print(f"{f[F_DATE]} | {f[F_BC_NAME]} | {f[F_ADV_NAME]} | spend {f[F_SPEND]} {f[F_CURRENCY]}")
-        print(json.dumps(rows[:20], ensure_ascii=False, indent=2))
         print(f"(dry-run) Tong {len(rows)} dong, khong ghi vao Base.")
         return
 
     lark = Lark()
-    if F_ADV_ID not in lark.types:
-        print(f"[GOI Y] Base chua co cot '{F_ADV_ID}' -> dang chong trung theo '{F_ADV_NAME}'.")
-    existing = lark.existing()
+    existing = lark.existing(dates)
     acc_field = F_ADV_ID if F_ADV_ID in lark.types else F_ADV_NAME
     to_create, to_update = [], []
     for f in rows:
         key = f"{f[F_BC_ID]}|{f[acc_field]}|{f[F_DATE]}"
+        # dong cu (truoc khi co cot Advertiser ID) duoc nhan dien theo Ten Tk
+        old_key = f"{f[F_BC_ID]}|{f[F_ADV_NAME]}|{f[F_DATE]}"
         fields = lark.convert(f)
-        if key in existing:
-            to_update.append({"record_id": existing[key], "fields": fields})
+        rid = existing.get(key) or existing.get(old_key)
+        if rid:
+            to_update.append({"record_id": rid, "fields": fields})
         else:
             to_create.append({"fields": fields})
     lark.batch("batch_create", to_create)
     lark.batch("batch_update", to_update)
-    print(f"Xong: them moi {len(to_create)}, cap nhat {len(to_update)}.")
+    print(f"Xong sau {time.time() - t0:.0f}s: them moi {len(to_create)}, cap nhat {len(to_update)}.")
 
 
 if __name__ == "__main__":
