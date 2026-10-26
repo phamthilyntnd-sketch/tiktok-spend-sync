@@ -343,15 +343,23 @@ class Lark:
 
 
 # ----------------------------- Main -----------------------------
-def process_bc(bc, start, end, token, with_balance):
+def process_bc(bc, start, end, tokens, with_balance):
+    """1 BC co the duoc cap cho nhieu email: thu lan luot tung token, token nao co quyen thi dung."""
     bal = {}
     if with_balance:
-        try:
-            bal = get_balances(bc["bc_id"], token)
-        except RuntimeError as e:
-            print(f"   [{bc['name']}] khong lay duoc so du ({e}) -> van lay spend")
-    spend = get_spend(bc["bc_id"], list(bal), start, end, token)
-    return bal, spend
+        for tk in tokens:
+            try:
+                bal = get_balances(bc["bc_id"], tk)
+                break
+            except RuntimeError as e:
+                last = e
+        else:
+            print(f"   [{bc['name']}] khong token nao lay duoc so du ({last}) -> van lay spend")
+    for i, tk in enumerate(tokens):
+        spend = get_spend(bc["bc_id"], list(bal), start, end, tk)
+        if spend or i == len(tokens) - 1:
+            return bal, spend
+    return bal, []
 
 
 def main():
@@ -378,8 +386,11 @@ def main():
             print(f"[TOKEN {i}] loi: {e}")
             continue
         new = [b for b in found if b["bc_id"] not in bc_seen]
+        for b in found:  # BC trung giua nhieu email -> gom token, chi lay 1 lan
+            if b["bc_id"] in bc_seen:
+                next(x for x in bcs if x["bc_id"] == b["bc_id"])["tokens"].append(tk)
         for b in new:
-            b["token"] = tk
+            b["tokens"] = [tk]
             bc_seen.add(b["bc_id"])
         bcs += new
         print(f"[TOKEN {i}] thay {len(found)} BC ({len(new)} BC moi)")
@@ -387,7 +398,7 @@ def main():
 
     rows, seen, summary = [], set(), []
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(process_bc, bc, str(start), str(end), bc["token"], with_balance): bc for bc in bcs}
+        futs = {ex.submit(process_bc, bc, str(start), str(end), bc["tokens"], with_balance): bc for bc in bcs}
         for fu in as_completed(futs):
             bc = futs[fu]
             try:
