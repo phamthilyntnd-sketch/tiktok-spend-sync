@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """
-Dong bo spending + so du/ngan sach cua tung Business Center (TikTok API for Business)
-vao Lark Base "Cap Nhat BC - LLC 2026". Chay moi ngay 6h sang (gio VN) qua GitHub Actions.
+Dong bo spending cua tung Business Center (TikTok API for Business) vao Lark Base.
+Chay moi ngay 6h sang (gio VN) qua GitHub Actions.
+
+Bang trong Base:
+  1) Bang chi tiet (LARK_TABLE_ID): 1 dong = 1 tai khoan quang cao x 1 ngay
+     + Quoc gia, Mui gio, Loai hinh quang cao (theo muc tieu chien dich)
+  2) "Tổng hợp BC" (tu tao): 1 dong = 1 BC x 1 ngay -> tang/giam, 7 ngay, thang nay,
+     du kien cuoi thang, % ngan sach, canh bao
+  3) "Ngân sách BC" (tu tao): quan ly nhap ngan sach thang (USD) cho tung BC
 
   python tiktok_bc_spend_to_lark.py             # dong bo
   python tiktok_bc_spend_to_lark.py --dry-run   # chi in ket qua, khong ghi vao Base
 
 Bien moi truong (GitHub Secrets):
-  TT_ACCESS_TOKEN, LARK_APP_ID, LARK_APP_SECRET, LARK_BASE_TOKEN, LARK_TABLE_ID
-  Tuy chon: LARK_DOMAIN (mac dinh https://open.larksuite.com), BC_IDS (bc1,bc2), DAYS_BACK (mac dinh 7)
-
-Script tu doc kieu cot trong Base (Van ban / So / Ngay) va tu doi dinh dang.
-Cot nao khong co trong Base se duoc bo qua (vd cot "Khach" do ban tu nhap, script khong dong vao).
+  TT_ACCESS_TOKEN (+ TT_ACCESS_TOKEN_2..10), LARK_APP_ID, LARK_APP_SECRET, LARK_BASE_TOKEN, LARK_TABLE_ID
+  Tuy chon: DAYS_BACK (2), PARALLEL (3), FETCH_BALANCE (1), FX_RATES (vd VND=26000),
+            ALERT_CHANGE_PCT (30), ALERT_MIN_USD (20), LOW_BALANCE_DAYS (3)
 """
+import calendar
 import datetime as dt
 import json
 import os
@@ -27,10 +33,10 @@ TT_API = "https://business-api.tiktok.com/open_api/v1.3"
 LARK_API = os.getenv("LARK_DOMAIN", "https://open.larksuite.com").rstrip("/") + "/open-apis"
 VN_TZ = dt.timezone(dt.timedelta(hours=7))
 
-# Ten cot dung theo bang cua ban
+# ---- Bang chi tiet ----
 F_BC_NAME = "Tên BC"
 F_BC_ID = "ID BC"
-F_ADV_ID = "Advertiser ID"   # nen them cot nay (Van ban) de chong trung chinh xac
+F_ADV_ID = "Advertiser ID"
 F_ADV_NAME = "Tên Tk"
 F_DATE = "Ngày"
 F_SPEND = "Spend"
@@ -42,10 +48,39 @@ F_SPEND_USD = "Spend (USD)"
 F_RATE = "Tỷ giá (1 USD)"
 F_MONTH = "Tháng"
 F_WEEK = "Tuần"
+F_COUNTRY = "Quốc gia"
+F_TZ = "Múi giờ"
+F_OBJ = "Loại hình QC"
 # Ten khac cua cot (khi ban doi ten cot trong Base, them ten moi vao day)
 ALIASES = {
     F_SPEND: ["Spend (USD & VNĐ)", "Spend"],
     F_SPEND_USD: ["Spend trong ngày (USD)", "Spend (USD)"],
+}
+
+# ---- Bang Tong hop BC ----
+T_SUMMARY = "Tổng hợp BC"
+S_KEY = "Mã dòng"
+S_FIELDS = [  # (ten cot, kieu: 1 van ban, 2 so, 5 ngay)
+    (S_KEY, 1), ("Ngày", 5), ("Tên BC", 1), ("ID BC", 1), ("Tháng", 1),
+    ("Số TK có chi tiêu", 2), ("Spend hôm qua (USD)", 2), ("Spend hôm kia (USD)", 2),
+    ("% so với hôm kia", 2), ("Spend 7 ngày (USD)", 2), ("Spend 7 ngày trước (USD)", 2),
+    ("% 7 ngày", 2), ("TB/ngày 7 ngày (USD)", 2), ("Spend tháng này (USD)", 2),
+    ("Dự kiến cả tháng (USD)", 2), ("Ngân sách tháng (USD)", 2), ("% ngân sách đã dùng", 2),
+    ("% dự kiến/ngân sách", 2), ("Ngân sách còn lại (USD)", 2), ("Số dư TK (USD)", 2),
+    ("Xu hướng", 1), ("Cảnh báo", 1), ("Loại hình chính", 1), ("Quốc gia chính", 1),
+    ("Cập nhật lúc", 5),
+]
+# ---- Bang Ngan sach BC ----
+T_BUDGET = "Ngân sách BC"
+B_FIELDS = [("Mã dòng", 1), ("Tháng", 1), ("Tên BC", 1), ("ID BC", 1), ("Ngân sách tháng (USD)", 2), ("Ghi chú", 1)]
+
+OBJECTIVES = {
+    "PRODUCT_SALES": "Bán hàng (Product Sales)", "SHOP_PURCHASES": "Mua hàng TikTok Shop",
+    "WEB_CONVERSIONS": "Chuyển đổi web", "CONVERSIONS": "Chuyển đổi", "TRAFFIC": "Lưu lượng truy cập",
+    "VIDEO_VIEWS": "Lượt xem video", "REACH": "Phạm vi tiếp cận", "ENGAGEMENT": "Tương tác",
+    "LEAD_GENERATION": "Thu thập khách hàng tiềm năng", "APP_PROMOTION": "Quảng bá ứng dụng",
+    "APP_INSTALL": "Cài đặt ứng dụng", "RF_REACH": "Reach & Frequency", "CATALOG_SALES": "Bán hàng theo danh mục",
+    "LIVE_SHOPPING": "Bán hàng LIVE", "GMV_MAX": "GMV Max", "FOLLOWERS": "Tăng người theo dõi",
 }
 
 
@@ -61,11 +96,11 @@ def tt_get(path, params, token):
     q = {k: json.dumps(v) if isinstance(v, (list, dict)) else v for k, v in params.items()}
     last = {}
     for attempt in range(6):
-        r = requests.get(TT_API + path, params=q, headers={"Access-Token": token}, timeout=60)
         try:
+            r = requests.get(TT_API + path, params=q, headers={"Access-Token": token}, timeout=60)
             j = r.json()
-        except ValueError:
-            j = {"code": r.status_code, "message": r.text[:300]}
+        except Exception as e:
+            j = {"code": -1, "message": str(e)[:300]}
         if j.get("code") == 0:
             return j.get("data") or {}
         last = j
@@ -113,15 +148,32 @@ def _parse_report(items):
     return rows
 
 
+class BCReport:
+    """Bao cao cap BC: khong can duoc chi dinh vao tung tai khoan. Nho bo metrics dung duoc."""
+
+    def __init__(self, bc_id, token):
+        self.bc_id, self.token = bc_id, token
+        self.metric_sets = [["spend", "currency", "advertiser_name"], ["spend", "currency"], ["spend"]]
+
+    def range(self, start, end):
+        """Tong spend tung tai khoan trong khoang [start, end]."""
+        for mi, metrics in enumerate(self.metric_sets):
+            params = {"report_type": "BC", "bc_id": self.bc_id, "dimensions": ["advertiser_id"],
+                      "metrics": metrics, "start_date": str(start), "end_date": str(end)}
+            try:
+                rows = _parse_report(tt_pages("/report/integrated/get/", params, self.token, page_size=1000))
+                self.metric_sets = self.metric_sets[mi:]
+                return rows
+            except RuntimeError:
+                if mi == len(self.metric_sets) - 1:
+                    raise
+        return []
+
+
 def _basic_report(adv_ids, start, end, token):
-    params = {
-        "report_type": "BASIC",
-        "data_level": "AUCTION_ADVERTISER",
-        "dimensions": ["advertiser_id", "stat_time_day"],
-        "metrics": ["spend"],
-        "start_date": start,
-        "end_date": end,
-    }
+    params = {"report_type": "BASIC", "data_level": "AUCTION_ADVERTISER",
+              "dimensions": ["advertiser_id", "stat_time_day"], "metrics": ["spend"],
+              "start_date": start, "end_date": end}
     if len(adv_ids) == 1:
         params["advertiser_id"] = adv_ids[0]
     else:
@@ -129,85 +181,20 @@ def _basic_report(adv_ids, start, end, token):
     return _parse_report(tt_pages("/report/integrated/get/", params, token, page_size=1000))
 
 
-def _bc_cost(bc_id, start, end, token):
-    """Chi phi tung tai khoan qua API cap BC (khong can duoc chi dinh vao tung tai khoan).
-    Thu nhieu dang tham so vi tai lieu TikTok khac nhau giua cac phien ban."""
-    tries = [
-        {"bc_id": bc_id, "filtering": {"start_date": start, "end_date": end}},
-        {"bc_id": bc_id, "start_date": start, "end_date": end},
-        {"bc_id": bc_id, "filtering": {"start_time": start + " 00:00:00", "end_time": end + " 23:59:59"}},
-    ]
-    last = None
-    for params in tries:
-        try:
-            data = tt_get("/bc/account/cost/get/", {**params, "page": 1, "page_size": 50}, token)
-        except RuntimeError as e:
-            last = e
-            continue
-        items = data.get("list") or data.get("cost_list") or data.get("advertiser_cost_list") or []
-        if items:
-            print("   [cost/get] mau du lieu:", json.dumps(items[0], ensure_ascii=False)[:400])
-        rows = []
-        page, total = 1, (data.get("page_info") or {}).get("total_page", 1) or 1
-        while True:
-            for it in items:
-                adv = str(it.get("advertiser_id") or it.get("account_id") or "")
-                amt = None
-                for k in ("cost", "amount", "total_cost", "spend", "cash_cost"):
-                    if it.get(k) not in (None, ""):
-                        amt = float(it.get(k))
-                        break
-                if adv and amt is not None:
-                    d = str(it.get("date") or it.get("stat_time_day") or end)[:10]
-                    rows.append({"advertiser_id": adv, "date": d, "spend": amt})
-            if page >= total:
-                break
-            page += 1
-            items = (tt_get("/bc/account/cost/get/", {**params, "page": page, "page_size": 50}, token).get("list") or [])
-        return rows
-    raise RuntimeError(f"cost/get khong dung duoc: {last}")
-
-
-def get_spend(bc_id, adv_ids, start, end, token):
-    """Lay spend tung tai khoan. Thu lan luot:
-    1) Bao cao cap BC  2) API chi phi cap BC  3) Bao cao tung tai khoan (can duoc chi dinh)."""
-    # Bao cao cap BC: khong can chi dinh tung tai khoan. TikTok chi cho dimensions=[advertiser_id],
-    # nen lay tung ngay mot de co spend theo ngay.
+def get_daily_spend(rep, adv_ids, start, end, token):
+    """Spend tung tai khoan theo tung ngay."""
     try:
-        d0 = dt.date.fromisoformat(start)
-        d1 = dt.date.fromisoformat(end)
         rows = []
-        metric_sets = [["spend", "currency", "advertiser_name"], ["spend", "currency"], ["spend"]]
-        day = d0
-        while day <= d1:
-            ds = str(day)
-            for mi, metrics in enumerate(metric_sets):
-                params = {"report_type": "BC", "bc_id": bc_id, "dimensions": ["advertiser_id"],
-                          "metrics": metrics, "start_date": ds, "end_date": ds}
-                try:
-                    got = _parse_report(tt_pages("/report/integrated/get/", params, token, page_size=1000))
-                    metric_sets = metric_sets[mi:]  # nho bo metrics dung duoc cho cac ngay sau
-                    break
-                except RuntimeError:
-                    if mi == len(metric_sets) - 1:
-                        raise
-            for r in got:
-                r["date"] = ds
+        day = dt.date.fromisoformat(start)
+        while day <= dt.date.fromisoformat(end):
+            for r in rep.range(day, day):
+                r["date"] = str(day)
                 rows.append(r)
             day += dt.timedelta(days=1)
-        print("   -> lay spend bang bao cao cap BC (theo tung ngay)")
         return rows
     except RuntimeError as e:
-        print(f"   (bao cao BC: {e})")
-    try:
-        rows = _bc_cost(bc_id, start, end, token)
-        if rows:
-            print("   -> lay spend bang API chi phi cap BC")
-            return rows
-        print("   (API chi phi cap BC tra ve rong)")
-    except RuntimeError as e:
-        print(f"   ({e})")
-    rows, failed = [], []
+        print(f"   (bao cao BC: {e}) -> thu bao cao tung tai khoan")
+    rows = []
     for i in range(0, len(adv_ids), 5):
         group = adv_ids[i:i + 5]
         try:
@@ -217,9 +204,7 @@ def get_spend(bc_id, adv_ids, start, end, token):
                 try:
                     rows += _basic_report([a], start, end, token)
                 except RuntimeError:
-                    failed.append(a)
-    if failed:
-        print(f"   ({len(failed)}/{len(adv_ids)} tai khoan chua chi dinh cho user -> chi lay duoc so du)")
+                    pass
     return rows
 
 
@@ -236,21 +221,52 @@ def get_balances(bc_id, token):
     return out
 
 
-def month_label(ds):
-    return ds[:7]  # vd 2026-10
+def get_attributes(bc_id, adv_ids, token):
+    """Quoc gia / mui gio / tien te cua tai khoan (API cap BC)."""
+    out = {}
+    for i in range(0, len(adv_ids), 100):
+        try:
+            data = tt_get("/bc/advertiser/attribute/", {"bc_id": bc_id, "advertiser_ids": adv_ids[i:i + 100]}, token)
+        except RuntimeError as e:
+            print(f"   (thuoc tinh TK: {e})")
+            return out
+        items = data.get("list") or data.get("advertiser_list") or data.get("attributes") or []
+        for it in items:
+            adv = str(it.get("advertiser_id", ""))
+            out[adv] = {
+                "country": it.get("region_code") or it.get("country_code") or it.get("country") or it.get("region") or "",
+                "tz": it.get("display_timezone") or it.get("timezone") or "",
+                "currency": it.get("currency") or "",
+            }
+    return out
 
 
-def week_label(ds):
-    d = dt.date.fromisoformat(ds[:10])
-    y, w, _ = d.isocalendar()
-    mon = d - dt.timedelta(days=d.weekday())
-    sun = mon + dt.timedelta(days=6)
-    return f"{y}-W{w:02d} ({mon:%d/%m}-{sun:%d/%m})"  # vd 2026-W44 (26/10-01/11)
+def get_objectives(adv_id, day, token):
+    """Spend theo muc tieu chien dich cua 1 tai khoan trong 1 ngay (can token co quyen vao TK)."""
+    params = {"report_type": "BASIC", "data_level": "AUCTION_CAMPAIGN", "advertiser_id": adv_id,
+              "dimensions": ["campaign_id"], "metrics": ["spend", "objective_type"],
+              "start_date": day, "end_date": day}
+    agg = {}
+    for it in tt_pages("/report/integrated/get/", params, token, page_size=1000):
+        m = it.get("metrics") or {}
+        sp = float(m.get("spend") or 0)
+        if sp > 0:
+            k = str(m.get("objective_type") or "KHAC")
+            agg[k] = agg.get(k, 0) + sp
+    return agg
 
 
-# ----------------------------- Ty gia -----------------------------
+def fmt_objectives(agg):
+    tot = sum(agg.values())
+    if not tot:
+        return ""
+    parts = sorted(agg.items(), key=lambda x: -x[1])
+    return " | ".join(f"{OBJECTIVES.get(k, k)} {v / tot:.0%}" for k, v in parts)
+
+
+# ----------------------------- Ty gia & nhan -----------------------------
 def get_fx():
-    """So don vi tien te / 1 USD. Uu tien bien FX_RATES (vd: VND=26300,THB=36), sau do lay tu open.er-api.com."""
+    """So don vi tien te / 1 USD. FX_RATES (vd: VND=26000) uu tien hon ty gia online."""
     rates = {"USD": 1.0}
     try:
         j = requests.get("https://open.er-api.com/v6/latest/USD", timeout=30).json()
@@ -266,9 +282,25 @@ def get_fx():
     return rates
 
 
+def month_label(ds):
+    return str(ds)[:7]
+
+
+def week_label(ds):
+    d = dt.date.fromisoformat(str(ds)[:10])
+    y, w, _ = d.isocalendar()
+    mon = d - dt.timedelta(days=d.weekday())
+    sun = mon + dt.timedelta(days=6)
+    return f"{y}-W{w:02d} ({mon:%d/%m}-{sun:%d/%m})"
+
+
+def pct(a, b):
+    return round((a - b) / b * 100, 1) if b else None
+
+
 # ----------------------------- Lark Base -----------------------------
 def date_to_ms(s):
-    y, m, d = (int(x) for x in s[:10].split("-"))
+    y, m, d = (int(x) for x in str(s)[:10].split("-"))
     return int(dt.datetime(y, m, d, tzinfo=VN_TZ).timestamp() * 1000)
 
 
@@ -295,48 +327,61 @@ class Lark:
             sys.exit(f"[LOI] Lark token: {j.get('code')} - {j.get('msg')}")
         self.h = {"Authorization": "Bearer " + j["tenant_access_token"],
                   "Content-Type": "application/json; charset=utf-8"}
-        self.base = f"{LARK_API}/bitable/v1/apps/{env('LARK_BASE_TOKEN')}/tables/{env('LARK_TABLE_ID')}"
+        self.app = f"{LARK_API}/bitable/v1/apps/{env('LARK_BASE_TOKEN')}"
+
+    def call(self, method, url, body=None, params=None):
+        for attempt in range(5):
+            try:
+                j = requests.request(method, url, headers=self.h, json=body, params=params, timeout=60).json()
+            except Exception as e:
+                j = {"code": -1, "msg": str(e)[:200]}
+            if j.get("code") == 0:
+                return j.get("data") or {}
+            if attempt == 4 or j.get("code") in (91402, 91403, 1254045, 99991672, 99991663):
+                raise RuntimeError(f"Lark loi: {j.get('code')} - {j.get('msg')}")
+            time.sleep(2 * (attempt + 1))
+
+    def ensure_table(self, name, fields):
+        """Tim bang theo ten, chua co thi tao moi. Tra ve table_id."""
+        token = None
+        while True:
+            p = {"page_size": 100}
+            if token:
+                p["page_token"] = token
+            data = self.call("GET", self.app + "/tables", params=p)
+            for t in data.get("items") or []:
+                if t.get("name") == name:
+                    return t["table_id"]
+            if not data.get("has_more"):
+                break
+            token = data.get("page_token")
+        body = {"table": {"name": name, "default_view_name": "Tất cả",
+                          "fields": [{"field_name": n, "type": t} for n, t in fields]}}
+        data = self.call("POST", self.app + "/tables", body)
+        print(f"Da tu tao bang '{name}' trong Base.")
+        return data.get("table_id")
+
+
+class Table:
+    def __init__(self, lark, table_id, want_fields=()):
+        self.l = lark
+        self.base = f"{lark.app}/tables/{table_id}"
         self.types = self._field_types()
         self.alias = {}
-        for logical, names in ALIASES.items():  # nhan ca ten cot da doi
+        for logical, names in ALIASES.items():
             for n in names:
                 if n in self.types:
                     self.alias[logical] = n
                     break
-        for name in (F_SPEND_USD, F_RATE):  # tu tao cot quy doi USD (kieu So)
-            if name in self.alias or name not in ALIASES and name in self.types:
+        for name, typ in want_fields:  # tu tao cot con thieu
+            if name in self.types or name in self.alias:
                 continue
-            if name not in self.types:
-                try:
-                    self._call("POST", self.base + "/fields", {"field_name": name, "type": 2})
-                    self.types[name] = 2
-                    print(f"Da tu tao cot '{name}' trong Base.")
-                except RuntimeError as e:
-                    print(f"[GOI Y] Khong tao duoc cot '{name}': {e}")
-        for name in (F_MONTH, F_WEEK):  # cot loc theo thang / tuan (Van ban)
-            if name not in self.types:
-                try:
-                    self._call("POST", self.base + "/fields", {"field_name": name, "type": 1})
-                    self.types[name] = 1
-                    print(f"Da tu tao cot '{name}' trong Base.")
-                except RuntimeError as e:
-                    print(f"[GOI Y] Khong tao duoc cot '{name}': {e}")
-        if F_ADV_ID not in self.types:  # tu tao cot Advertiser ID de chong trung chinh xac
             try:
-                self._call("POST", self.base + "/fields", {"field_name": F_ADV_ID, "type": 1})
-                self.types[F_ADV_ID] = 1
-                print(f"Da tu tao cot '{F_ADV_ID}' trong Base.")
+                self.l.call("POST", self.base + "/fields", {"field_name": name, "type": typ})
+                self.types[name] = typ
+                print(f"Da tu tao cot '{name}'.")
             except RuntimeError as e:
-                print(f"[GOI Y] Khong tao duoc cot '{F_ADV_ID}': {e}")
-
-    def _call(self, method, url, body=None, params=None):
-        for attempt in range(4):
-            j = requests.request(method, url, headers=self.h, json=body, params=params, timeout=60).json()
-            if j.get("code") == 0:
-                return j.get("data") or {}
-            if attempt == 3 or j.get("code") in (91403, 1254045, 99991672, 99991663):
-                raise RuntimeError(f"Lark loi: {j.get('code')} - {j.get('msg')}")
-            time.sleep(2 * (attempt + 1))
+                print(f"[GOI Y] Khong tao duoc cot '{name}': {e}")
 
     def _field_types(self):
         types, token = {}, None
@@ -344,13 +389,12 @@ class Lark:
             p = {"page_size": 100}
             if token:
                 p["page_token"] = token
-            data = self._call("GET", self.base + "/fields", params=p)
+            data = self.l.call("GET", self.base + "/fields", params=p)
             for f in data.get("items") or []:
-                types[f["field_name"]] = f["type"]  # 1 van ban, 2 so, 5 ngay
+                types[f["field_name"]] = f["type"]
             if not data.get("has_more"):
                 break
             token = data.get("page_token")
-        print("Cot trong Base:", ", ".join(types))
         return types
 
     def convert(self, fields):
@@ -360,108 +404,127 @@ class Lark:
             t = self.types.get(name)
             if t is None or val is None or val == "":
                 continue
-            if t == 5:  # Ngay
+            if t == 5:
                 out[name] = val if isinstance(val, int) else date_to_ms(str(val))
-            elif t == 2:  # So
+            elif t == 2:
                 out[name] = float(val)
-            else:  # Van ban va loai khac
+            else:
                 out[name] = str(val)
         return out
 
-    def key_of(self, fields_raw):
-        """Key chong trung tu ban ghi Base: ID BC | (Advertiser ID hoac Ten Tk) | Ngay."""
-        acc_field = F_ADV_ID if F_ADV_ID in self.types else F_ADV_NAME
-        bc = cell_text(fields_raw.get(F_BC_ID))
-        acc = cell_text(fields_raw.get(acc_field))
-        d = fields_raw.get(F_DATE)
-        if isinstance(d, (int, float)):
-            d = ms_to_date(d)
-        else:
-            d = cell_text(d)[:10]
-        return f"{bc}|{acc}|{d}"
-
-    def _scan(self, body):
-        keys, token = {}, None
+    def scan(self, body=None):
+        """Doc ban ghi (co the loc). Tra ve list (record_id, fields)."""
+        out, token = [], None
         while True:
             p = {"page_size": 500}
             if token:
                 p["page_token"] = token
-            data = self._call("POST", self.base + "/records/search", body, p)
-            for it in data.get("items") or []:
-                fr = it.get("fields") or {}
-                keys[self.key_of(fr)] = it["record_id"]
-                # them khoa theo Ten Tk cho cac dong cu chua co Advertiser ID
-                d = fr.get(F_DATE)
-                d = ms_to_date(d) if isinstance(d, (int, float)) else cell_text(d)[:10]
-                keys.setdefault(f"{cell_text(fr.get(F_BC_ID))}|{cell_text(fr.get(F_ADV_NAME))}|{d}", it["record_id"])
+            data = self.l.call("POST", self.base + "/records/search", body or {}, p)
+            out += [(it["record_id"], it.get("fields") or {}) for it in data.get("items") or []]
             if not data.get("has_more"):
                 break
             token = data.get("page_token")
-        return keys
-
-    def existing(self, dates):
-        """Chi doc cac dong thuoc nhung ngay dang dong bo (nhanh, khong doc ca bang)."""
-        names = [n for n in (F_BC_ID, F_ADV_ID, F_ADV_NAME, F_DATE) if n in self.types]
-        if self.types.get(F_DATE) == 5:
-            conds = [{"field_name": F_DATE, "operator": "is", "value": ["ExactDate", str(date_to_ms(d))]} for d in dates]
-        else:
-            conds = [{"field_name": F_DATE, "operator": "is", "value": [d]} for d in dates]
-        try:
-            return self._scan({"field_names": names, "filter": {"conjunction": "or", "conditions": conds}})
-        except RuntimeError as e:
-            print(f"   (loc theo ngay loi: {e} -> doc ca bang)")
-            return self._scan({"field_names": names})
+        return out
 
     def batch(self, action, records):
         for i in range(0, len(records), 500):
-            self._call("POST", f"{self.base}/records/{action}", {"records": records[i:i + 500]})
+            self.l.call("POST", f"{self.base}/records/{action}", {"records": records[i:i + 500]})
+
+    def upsert(self, rows, keyfn, existing):
+        """existing: {key: record_id}. Them moi hoac cap nhat."""
+        create, update = [], []
+        for f in rows:
+            rid = None
+            for k in keyfn(f):
+                rid = rid or existing.get(k)
+            fields = self.convert(f)
+            (update.append({"record_id": rid, "fields": fields}) if rid else create.append({"fields": fields}))
+        self.batch("batch_create", create)
+        self.batch("batch_update", update)
+        return len(create), len(update)
 
 
-# ----------------------------- Main -----------------------------
+def date_filter(field, dates, is_date):
+    if is_date:
+        conds = [{"field_name": field, "operator": "is", "value": ["ExactDate", str(date_to_ms(d))]} for d in dates]
+    else:
+        conds = [{"field_name": field, "operator": "is", "value": [str(d)]} for d in dates]
+    return {"conjunction": "or", "conditions": conds}
+
+
+# ----------------------------- Xu ly 1 BC -----------------------------
 def process_bc(bc, start, end, tokens, with_balance):
-    """1 BC co the duoc cap cho nhieu email: thu lan luot tung token, token nao co quyen thi dung."""
-    bal = {}
+    """1 BC co the duoc cap cho nhieu email: thu lan luot tung token."""
+    res = {"bal": {}, "daily": [], "w7": [], "p7": [], "mtd": [], "attr": {}, "obj": {}}
     if with_balance:
+        last = None
         for tk in tokens:
             try:
-                bal = get_balances(bc["bc_id"], tk)
+                res["bal"] = get_balances(bc["bc_id"], tk)
                 break
             except RuntimeError as e:
                 last = e
         else:
-            print(f"   [{bc['name']}] khong token nao lay duoc so du ({last}) -> van lay spend")
+            print(f"   [{bc['name']}] khong lay duoc so du ({last}) -> van lay spend")
+    end_d = dt.date.fromisoformat(end)
     for i, tk in enumerate(tokens):
-        spend = get_spend(bc["bc_id"], list(bal), start, end, tk)
-        if spend or i == len(tokens) - 1:
-            return bal, spend
-    return bal, []
+        rep = BCReport(bc["bc_id"], tk)
+        daily = get_daily_spend(rep, list(res["bal"]), start, end, tk)
+        if not daily and i < len(tokens) - 1:
+            continue
+        res["daily"], res["token"] = daily, tk
+        try:  # so lieu tong hop cho quan ly
+            res["w7"] = rep.range(end_d - dt.timedelta(days=6), end_d)
+            res["p7"] = rep.range(end_d - dt.timedelta(days=13), end_d - dt.timedelta(days=7))
+            res["mtd"] = rep.range(end_d.replace(day=1), end_d)
+        except RuntimeError as e:
+            print(f"   [{bc['name']}] khong lay duoc so tong hop: {e}")
+        break
+    active = sorted({r["advertiser_id"] for r in res["daily"] + res["mtd"] if r["spend"] > 0})
+    tk = res.get("token") or tokens[0]
+    if active:
+        res["attr"] = get_attributes(bc["bc_id"], active, tk)
+    if os.getenv("FETCH_OBJECTIVE", "1") == "1":
+        for adv in sorted({r["advertiser_id"] for r in res["daily"] if r["spend"] > 0 and r["date"] == end}):
+            for t in tokens:
+                try:
+                    res["obj"][adv] = get_objectives(adv, end, t)
+                    break
+                except RuntimeError:
+                    continue
+    return res
 
 
+# ----------------------------- Main -----------------------------
 def main():
     from concurrent.futures import ThreadPoolExecutor, as_completed
     dry = "--dry-run" in sys.argv
     env("TT_ACCESS_TOKEN")
-    # Nhieu tai khoan TikTok (nhieu email): TT_ACCESS_TOKEN, TT_ACCESS_TOKEN_2 ... TT_ACCESS_TOKEN_10
     tokens = [os.getenv("TT_ACCESS_TOKEN")] + [os.getenv(f"TT_ACCESS_TOKEN_{i}") for i in range(2, 11)]
     tokens = [t.strip() for t in tokens if t and t.strip()]
     days = max(1, min(30, int(os.getenv("DAYS_BACK", "2"))))
-    workers = max(1, int(os.getenv("PARALLEL", "5")))
+    workers = max(1, int(os.getenv("PARALLEL", "3")))
     with_balance = os.getenv("FETCH_BALANCE", "1") == "1"
+    alert_pct = float(os.getenv("ALERT_CHANGE_PCT", "30"))
+    alert_min = float(os.getenv("ALERT_MIN_USD", "20"))
+    low_days = float(os.getenv("LOW_BALANCE_DAYS", "3"))
     today = dt.datetime.now(VN_TZ).date()
     end = today - dt.timedelta(days=1)
     start = end - dt.timedelta(days=days - 1)
     dates = [str(start + dt.timedelta(days=i)) for i in range(days)]
+    prev = str(end - dt.timedelta(days=1))
     now_ms = int(dt.datetime.now(VN_TZ).timestamp() * 1000)
     t0 = time.time()
+
     bcs, bc_seen = [], set()
     for i, tk in enumerate(tokens, 1):
         try:
             found = get_bcs(tk)
         except RuntimeError as e:
-            print(f"[TOKEN {i}] loi: {e} | kiem tra: dai {len(tk)} ky tu (dung la 40), bat dau '{tk[:4]}', ket thuc '{tk[-4:]}'")
+            print(f"[TOKEN {i}] loi: {e} | kiem tra: dai {len(tk)} ky tu, bat dau '{tk[:4]}', ket thuc '{tk[-4:]}'")
             continue
         new = [b for b in found if b["bc_id"] not in bc_seen]
-        for b in found:  # BC trung giua nhieu email -> gom token, chi lay 1 lan
+        for b in found:
             if b["bc_id"] in bc_seen:
                 next(x for x in bcs if x["bc_id"] == b["bc_id"])["tokens"].append(tk)
         for b in new:
@@ -469,80 +532,213 @@ def main():
             bc_seen.add(b["bc_id"])
         bcs += new
         print(f"[TOKEN {i}] thay {len(found)} BC ({len(new)} BC moi)")
-    print(f"Dong bo {start} -> {end} | {len(bcs)} BC | {len(tokens)} token | chay song song {workers} BC")
+    print(f"Dong bo {start} -> {end} | {len(bcs)} BC | {len(tokens)} token | song song {workers} BC")
 
     fx = get_fx()
-    no_cur = set()
-    rows, seen, summary = [], set(), []
+    # lay spend hom kia de so sanh (neu DAYS_BACK = 1)
+    fetch_start = min(str(start), prev)
+
+    def usd(amount, cur):
+        cur = (cur or "").upper()
+        return amount / fx[cur] if cur in fx else None
+
+    detail, summary, no_cur = [], [], set()
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(process_bc, bc, str(start), str(end), bc["tokens"], with_balance): bc for bc in bcs}
+        futs = {ex.submit(process_bc, bc, fetch_start, str(end), bc["tokens"], with_balance): bc for bc in bcs}
         for fu in as_completed(futs):
             bc = futs[fu]
             try:
-                bal, spend = fu.result()
+                res = fu.result()
             except Exception as e:
                 print(f"[BO QUA] BC {bc['bc_id']} ({bc['name']}): {e}")
                 continue
-            total_end = 0.0
-            n = 0
-            for r in spend:
-                if r["spend"] <= 0:  # chi ghi tai khoan co tieu tien
+            bal, attr, objs = res["bal"], res["attr"], res["obj"]
+            curmap = {}
+            for src in (res["daily"], res["w7"], res["p7"], res["mtd"]):
+                for r in src:
+                    if r.get("currency"):
+                        curmap[r["advertiser_id"]] = r["currency"].upper()
+            for adv, a in attr.items():
+                if a.get("currency"):
+                    curmap.setdefault(adv, a["currency"].upper())
+            for adv, b in bal.items():
+                if b.get("currency"):
+                    curmap[adv] = b["currency"].upper()
+
+            def tot_usd(rows):
+                s = 0.0
+                for r in rows:
+                    v = usd(r["spend"], curmap.get(r["advertiser_id"]))
+                    if v is None and r["spend"] > 0:
+                        no_cur.add(r["advertiser_id"])
+                    s += v or 0
+                return s
+
+            # --- bang chi tiet ---
+            day_usd = {d: 0.0 for d in (str(end), prev)}
+            n_active = 0
+            seen = set()
+            for r in res["daily"]:
+                if r["spend"] <= 0:
                     continue
-                key = (bc["bc_id"], r["advertiser_id"], r["date"])
+                key = (r["advertiser_id"], r["date"])
                 if key in seen:
                     continue
                 seen.add(key)
-                b = bal.get(r["advertiser_id"], {})
-                cur = (b.get("currency") or r.get("currency") or "").upper()
+                adv = r["advertiser_id"]
+                b, a = bal.get(adv, {}), attr.get(adv, {})
+                cur = curmap.get(adv, "")
+                v = usd(r["spend"], cur)
+                if r["date"] in day_usd:
+                    day_usd[r["date"]] += v or 0
+                if r["date"] == str(end):
+                    n_active += 1
+                if r["date"] not in dates:
+                    continue
                 f = {
-                    F_BC_NAME: bc["name"], F_BC_ID: bc["bc_id"], F_ADV_ID: r["advertiser_id"],
-                    F_ADV_NAME: b.get("name") or r.get("name") or r["advertiser_id"], F_DATE: r["date"],
+                    F_BC_NAME: bc["name"], F_BC_ID: bc["bc_id"], F_ADV_ID: adv,
+                    F_ADV_NAME: b.get("name") or r.get("name") or adv, F_DATE: r["date"],
                     F_SPEND: round(r["spend"], 2), F_CURRENCY: cur, F_UPDATED: now_ms,
                     F_MONTH: month_label(r["date"]), F_WEEK: week_label(r["date"]),
+                    F_COUNTRY: a.get("country", ""), F_TZ: a.get("tz", ""),
                 }
-                if cur and cur in fx:
+                if v is not None:
                     f[F_RATE] = fx[cur]
-                    f[F_SPEND_USD] = round(r["spend"] / fx[cur], 2)
+                    f[F_SPEND_USD] = round(v, 2)
                 else:
-                    no_cur.add(r["advertiser_id"])
+                    no_cur.add(adv)
                 if r["date"] == str(end):
                     f[F_BALANCE] = b.get("balance")
                     f[F_BUDGET] = b.get("budget")
-                    total_end += f.get(F_SPEND_USD) or 0
-                rows.append(f)
-                n += 1
-            summary.append((bc["name"], n, total_end))
-            print(f"BC {bc['name']}: {n} dong co spend | tong spend {end}: {total_end:,.2f} USD")
+                    if adv in objs:
+                        f[F_OBJ] = fmt_objectives(objs[adv])
+                detail.append(f)
+
+            # --- tong hop BC ---
+            obj_tot = {}
+            for agg in objs.values():
+                for k, v in agg.items():
+                    obj_tot[k] = obj_tot.get(k, 0) + v
+            cty_tot = {}
+            for r in res["mtd"]:
+                c = attr.get(r["advertiser_id"], {}).get("country") or ""
+                if c:
+                    cty_tot[c] = cty_tot.get(c, 0) + (usd(r["spend"], curmap.get(r["advertiser_id"])) or 0)
+            bal_usd = sum(usd(float(b["balance"]), b.get("currency")) or 0
+                          for b in bal.values() if b.get("balance") not in (None, ""))
+            w7, p7, mtd = tot_usd(res["w7"]), tot_usd(res["p7"]), tot_usd(res["mtd"])
+            dim = calendar.monthrange(end.year, end.month)[1]
+            avg7 = w7 / 7
+            forecast = mtd + avg7 * (dim - end.day)
+            summary.append({
+                "bc": bc, "y": day_usd[str(end)], "p": day_usd[prev], "w7": w7, "p7": p7, "avg7": avg7,
+                "mtd": mtd, "fc": forecast, "n": n_active, "bal": bal_usd if bal else None,
+                "obj": fmt_objectives(obj_tot), "cty": ", ".join(k for k, _ in sorted(cty_tot.items(), key=lambda x: -x[1])[:3]),
+            })
+            print(f"BC {bc['name']}: {n_active} TK chi tieu | hom qua {day_usd[str(end)]:,.2f} USD | thang nay {mtd:,.2f} USD")
 
     if no_cur:
-        print(f"[CANH BAO] {len(no_cur)} tai khoan chua biet tien te -> chua quy doi USD: {', '.join(sorted(no_cur)[:20])}")
-    print(f"Lay du lieu TikTok xong sau {time.time() - t0:.0f}s, tong {len(rows)} dong.")
+        print(f"[CANH BAO] {len(no_cur)} TK chua biet tien te -> chua quy doi USD: {', '.join(sorted(no_cur)[:20])}")
+    print(f"Lay du lieu TikTok xong sau {time.time() - t0:.0f}s: {len(detail)} dong chi tiet, {len(summary)} BC.")
+
     lark_ready = all(os.getenv(k) for k in ("LARK_APP_ID", "LARK_APP_SECRET", "LARK_BASE_TOKEN", "LARK_TABLE_ID"))
     if dry or not lark_ready:
-        if not lark_ready:
-            print("[CHUA GHI VAO BASE] Thieu secret Lark -> chi hien du lieu xem truoc:")
-        for f in rows[:50]:
-            print(f"{f[F_DATE]} | {f[F_BC_NAME]} | {f[F_ADV_NAME]} | spend {f[F_SPEND]} {f[F_CURRENCY]}")
-        print(f"(dry-run) Tong {len(rows)} dong, khong ghi vao Base.")
+        for s in sorted(summary, key=lambda x: -x["y"])[:30]:
+            print(f"{s['bc']['name']}: hom qua {s['y']:,.2f} | hom kia {s['p']:,.2f} | 7 ngay {s['w7']:,.2f} | thang {s['mtd']:,.2f} | du kien {s['fc']:,.2f}")
+        print("(dry-run) khong ghi vao Base.")
         return
 
     lark = Lark()
-    existing = lark.existing(dates)
-    acc_field = F_ADV_ID if F_ADV_ID in lark.types else F_ADV_NAME
-    to_create, to_update = [], []
-    for f in rows:
-        key = f"{f[F_BC_ID]}|{f[acc_field]}|{f[F_DATE]}"
-        # dong cu (truoc khi co cot Advertiser ID) duoc nhan dien theo Ten Tk
-        old_key = f"{f[F_BC_ID]}|{f[F_ADV_NAME]}|{f[F_DATE]}"
-        fields = lark.convert(f)
-        rid = existing.get(key) or existing.get(old_key)
-        if rid:
-            to_update.append({"record_id": rid, "fields": fields})
-        else:
-            to_create.append({"fields": fields})
-    lark.batch("batch_create", to_create)
-    lark.batch("batch_update", to_update)
-    print(f"Xong sau {time.time() - t0:.0f}s: them moi {len(to_create)}, cap nhat {len(to_update)}. Tong spend ngay {end}: {sum(f.get(F_SPEND_USD) or 0 for f in rows if f[F_DATE] == str(end)):,.2f} USD")
+    # 1) Bang chi tiet
+    det = Table(lark, env("LARK_TABLE_ID"), [
+        (F_SPEND_USD, 2), (F_RATE, 2), (F_MONTH, 1), (F_WEEK, 1), (F_ADV_ID, 1),
+        (F_COUNTRY, 1), (F_TZ, 1), (F_OBJ, 1)])
+    names = [n for n in (F_BC_ID, F_ADV_ID, F_ADV_NAME, F_DATE) if n in det.types]
+    try:
+        recs = det.scan({"field_names": names, "filter": date_filter(F_DATE, dates, det.types.get(F_DATE) == 5)})
+    except RuntimeError as e:
+        print(f"   (loc theo ngay loi: {e} -> doc ca bang)")
+        recs = det.scan({"field_names": names})
+    existing = {}
+    for rid, fr in recs:
+        d = fr.get(F_DATE)
+        d = ms_to_date(d) if isinstance(d, (int, float)) else cell_text(d)[:10]
+        bcid = cell_text(fr.get(F_BC_ID))
+        existing[f"{bcid}|{cell_text(fr.get(F_ADV_ID))}|{d}"] = rid
+        existing.setdefault(f"{bcid}|{cell_text(fr.get(F_ADV_NAME))}|{d}", rid)
+    c, u = det.upsert(detail, lambda f: (f"{f[F_BC_ID]}|{f[F_ADV_ID]}|{f[F_DATE]}",
+                                         f"{f[F_BC_ID]}|{f[F_ADV_NAME]}|{f[F_DATE]}"), existing)
+    print(f"Bang chi tiet: them moi {c}, cap nhat {u}.")
+
+    # 2) Bang Ngan sach BC: dam bao moi BC co 1 dong cho thang nay (quan ly tu nhap so)
+    month = month_label(end)
+    bud = Table(lark, lark.ensure_table(T_BUDGET, B_FIELDS), B_FIELDS)
+    budgets, bud_exist = {}, {}
+    for rid, fr in bud.scan():
+        key = cell_text(fr.get("Mã dòng"))
+        bud_exist[key] = rid
+        v = fr.get("Ngân sách tháng (USD)")
+        if cell_text(fr.get("Tháng")) == month and v not in (None, ""):
+            budgets[cell_text(fr.get("ID BC"))] = float(v)
+    new_bud = [{"Mã dòng": f"{month}|{s['bc']['bc_id']}", "Tháng": month, "Tên BC": s["bc"]["name"],
+                "ID BC": s["bc"]["bc_id"]} for s in summary if f"{month}|{s['bc']['bc_id']}" not in bud_exist]
+    if new_bud:
+        bud.batch("batch_create", [{"fields": bud.convert(f)} for f in new_bud])
+        print(f"Bang Ngan sach BC: them {len(new_bud)} dong cho thang {month} (cho quan ly nhap ngan sach).")
+
+    # 3) Bang Tong hop BC
+    summ = Table(lark, lark.ensure_table(T_SUMMARY, S_FIELDS), S_FIELDS)
+    rows = []
+    for s in summary:
+        bcid = s["bc"]["bc_id"]
+        budget = budgets.get(bcid)
+        dchg, wchg = pct(s["y"], s["p"]), pct(s["w7"], s["p7"])
+        alerts = []
+        if s["p"] >= alert_min and s["y"] == 0:
+            alerts.append("⛔ Ngừng chi tiêu")
+        elif dchg is not None and max(s["y"], s["p"]) >= alert_min:
+            if dchg >= alert_pct:
+                alerts.append(f"🔺 Tăng mạnh {dchg:+.0f}% so với hôm kia")
+            elif dchg <= -alert_pct:
+                alerts.append(f"🔻 Giảm mạnh {dchg:+.0f}% so với hôm kia")
+        if budget:
+            if s["mtd"] >= budget:
+                alerts.append("🚨 Đã vượt ngân sách tháng")
+            elif s["mtd"] >= 0.9 * budget:
+                alerts.append("⚠️ Đã dùng ≥90% ngân sách")
+            if s["fc"] > budget and s["mtd"] < budget:
+                alerts.append(f"⚠️ Dự kiến vượt ngân sách {s['fc'] - budget:,.0f} USD")
+        if s["bal"] is not None and s["avg7"] > 0 and s["bal"] < s["avg7"] * low_days:
+            alerts.append(f"💰 Số dư chỉ đủ ~{s['bal'] / s['avg7']:.1f} ngày")
+        trend = "Ổn định"
+        if wchg is not None:
+            trend = "📈 Tăng" if wchg >= 10 else ("📉 Giảm" if wchg <= -10 else "Ổn định")
+        elif s["w7"] > 0:
+            trend = "🆕 Mới chi tiêu"
+        elif s["w7"] == 0:
+            trend = "Không chi tiêu"
+        rows.append({
+            S_KEY: f"{bcid}|{end}", "Ngày": str(end), "Tên BC": s["bc"]["name"], "ID BC": bcid, "Tháng": month,
+            "Số TK có chi tiêu": s["n"], "Spend hôm qua (USD)": round(s["y"], 2),
+            "Spend hôm kia (USD)": round(s["p"], 2), "% so với hôm kia": dchg,
+            "Spend 7 ngày (USD)": round(s["w7"], 2), "Spend 7 ngày trước (USD)": round(s["p7"], 2),
+            "% 7 ngày": wchg, "TB/ngày 7 ngày (USD)": round(s["avg7"], 2),
+            "Spend tháng này (USD)": round(s["mtd"], 2), "Dự kiến cả tháng (USD)": round(s["fc"], 2),
+            "Ngân sách tháng (USD)": budget,
+            "% ngân sách đã dùng": round(s["mtd"] / budget * 100, 1) if budget else None,
+            "% dự kiến/ngân sách": round(s["fc"] / budget * 100, 1) if budget else None,
+            "Ngân sách còn lại (USD)": round(budget - s["mtd"], 2) if budget else None,
+            "Số dư TK (USD)": round(s["bal"], 2) if s["bal"] is not None else None,
+            "Xu hướng": trend, "Cảnh báo": " | ".join(alerts) or "✅ Bình thường",
+            "Loại hình chính": s["obj"], "Quốc gia chính": s["cty"], "Cập nhật lúc": now_ms,
+        })
+    ex_sum = {cell_text(fr.get(S_KEY)): rid for rid, fr in summ.scan({"field_names": [S_KEY]})}
+    c2, u2 = summ.upsert(rows, lambda f: (f[S_KEY],), ex_sum)
+    n_alert = sum(1 for r in rows if r["Cảnh báo"] != "✅ Bình thường")
+    total_y = sum(s["y"] for s in summary)
+    print(f"Bang Tong hop BC: them moi {c2}, cap nhat {u2} | {n_alert} BC co canh bao.")
+    print(f"Xong sau {time.time() - t0:.0f}s. Tong spend {end}: {total_y:,.2f} USD | thang {month}: "
+          f"{sum(s['mtd'] for s in summary):,.2f} USD | du kien ca thang: {sum(s['fc'] for s in summary):,.2f} USD")
 
 
 if __name__ == "__main__":
