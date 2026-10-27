@@ -383,7 +383,7 @@ def main():
         try:
             found = get_bcs(tk)
         except RuntimeError as e:
-            print(f"[TOKEN {i}] loi: {e}")
+            print(f"[TOKEN {i}] loi: {e} | kiem tra: dai {len(tk)} ky tu (dung la 40), bat dau '{tk[:4]}', ket thuc '{tk[-4:]}'")
             continue
         new = [b for b in found if b["bc_id"] not in bc_seen]
         for b in found:  # BC trung giua nhieu email -> gom token, chi lay 1 lan
