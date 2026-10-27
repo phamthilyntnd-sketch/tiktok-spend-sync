@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: "0 23 * * *"
   workflow_dispatch:
+    inputs:
+      days_back:
+        description: "So ngay lay lai (1-30). Mac dinh 2"
+        required: false
+        default: "2"
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -28,6 +33,6 @@ jobs:
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
           LARK_BASE_TOKEN: ${{ secrets.LARK_BASE_TOKEN }}
           LARK_TABLE_ID: ${{ secrets.LARK_TABLE_ID }}
-          DAYS_BACK: "2"
+          DAYS_BACK: ${{ github.event.inputs.days_back || '2' }}
           PARALLEL: "5"
           FETCH_BALANCE: "1"
