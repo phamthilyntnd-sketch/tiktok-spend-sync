@@ -2,6 +2,9 @@ name: TikTok BC spend -> Lark Base
 on:
   schedule:
     - cron: "0 23 * * *"
+  push:
+    branches: [main]
+    paths: [".run-now"]
   workflow_dispatch:
     inputs:
       days_back:
