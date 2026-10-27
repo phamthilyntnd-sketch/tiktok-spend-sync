@@ -70,6 +70,20 @@ S_FIELDS = [  # (ten cot, kieu: 1 van ban, 2 so, 5 ngay)
     ("Xu hướng", 1), ("Cảnh báo", 1), ("Loại hình chính", 1), ("Quốc gia chính", 1),
     ("Cập nhật lúc", 5),
 ]
+# ---- Bang Bao cao BC (quan ly tao, script dien them cot so lieu) ----
+T_REPORT = "Báo cáo BC"
+R_FIELDS = [
+    ("Mức cảnh báo", 1), ("Cảnh báo", 1), ("Xu hướng", 1),
+    ("Spend hôm qua (USD)", 2), ("% so với hôm kia", 2), ("Spend 7 ngày (USD)", 2), ("Tăng trưởng (tuần)", 2),
+    ("TB/ngày 7 ngày (USD)", 2), ("Spend tháng này (USD)", 2), ("Dự kiến cả tháng (USD)", 2),
+    ("Ngân sách tháng (USD)", 2), ("% ngân sách đã dùng", 2), ("Spend quý này (USD)", 2), ("Dự kiến hết Quý", 2),
+    ("TK chi tiêu hôm qua", 2), ("TK chi tiêu tháng này", 2), ("Tổng TK trong BC", 2), ("Số dư TK (USD)", 2),
+    ("Cập nhật lúc", 5),
+]
+# ---- Bang Tong theo ngay ----
+T_DAILY = "Tổng theo ngày"
+D_FIELDS = [("Mã dòng", 1), ("Ngày", 5), ("Tuần", 1), ("Tháng", 1), ("Tên BC", 1), ("ID BC", 1),
+            ("Spend (USD)", 2), ("Số TK chi tiêu", 2), ("Cập nhật lúc", 5)]
 # ---- Bang Ngan sach BC ----
 T_BUDGET = "Ngân sách BC"
 B_FIELDS = [("Mã dòng", 1), ("Tháng", 1), ("Tên BC", 1), ("ID BC", 1), ("Ngân sách tháng (USD)", 2), ("Ghi chú", 1)]
@@ -85,6 +99,7 @@ OBJECTIVES = {
 
 
 DBG = {}
+WRITABLE = {1, 2, 3, 4, 5, 7, 11, 13, 15, 17, 22, 23}  # bo qua cot cong thuc / lookup
 
 
 def env(name, required=True, default=None):
@@ -367,6 +382,20 @@ class Lark:
                 raise RuntimeError(f"Lark loi: {j.get('code')} - {j.get('msg')}")
             time.sleep(2 * (attempt + 1))
 
+    def find_table(self, name):
+        token = None
+        while True:
+            p = {"page_size": 100}
+            if token:
+                p["page_token"] = token
+            data = self.call("GET", self.app + "/tables", params=p)
+            for t in data.get("items") or []:
+                if t.get("name") == name:
+                    return t["table_id"]
+            if not data.get("has_more"):
+                return None
+            token = data.get("page_token")
+
     def ensure_table(self, name, fields):
         """Tim bang theo ten, chua co thi tao moi. Tra ve table_id."""
         token = None
@@ -428,7 +457,7 @@ class Table:
         for name, val in fields.items():
             name = self.alias.get(name, name)
             t = self.types.get(name)
-            if t is None or val is None or val == "":
+            if t is None or val is None or val == "" or t not in WRITABLE:
                 continue
             if t == 5:
                 out[name] = val if isinstance(val, int) else date_to_ms(str(val))
@@ -481,7 +510,7 @@ def date_filter(field, dates, is_date):
 # ----------------------------- Xu ly 1 BC -----------------------------
 def process_bc(bc, start, end, tokens, with_balance):
     """1 BC co the duoc cap cho nhieu email: thu lan luot tung token."""
-    res = {"bal": {}, "daily": [], "w7": [], "p7": [], "mtd": [], "attr": {}, "obj": {}}
+    res = {"bal": {}, "daily": [], "w7": [], "p7": [], "mtd": [], "qtd": [], "attr": {}, "obj": {}}
     if with_balance:
         last = None
         for tk in tokens:
@@ -503,6 +532,8 @@ def process_bc(bc, start, end, tokens, with_balance):
             res["w7"] = rep.range(end_d - dt.timedelta(days=6), end_d)
             res["p7"] = rep.range(end_d - dt.timedelta(days=13), end_d - dt.timedelta(days=7))
             res["mtd"] = rep.range(end_d.replace(day=1), end_d)
+            q_start = dt.date(end_d.year, 3 * ((end_d.month - 1) // 3) + 1, 1)
+            res["qtd"] = res["mtd"] if q_start.month == end_d.month else rep.range(q_start, end_d)
         except RuntimeError as e:
             print(f"   [{bc['name']}] khong lay duoc so tong hop: {e}")
         break
@@ -577,6 +608,7 @@ def main():
         return amount / fx[cur] if cur in fx else None
 
     detail, summary, no_cur = [], [], set()
+    acc_bcs, mtd_by_bc = {}, {}
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(process_bc, bc, fetch_start, str(end), bc["tokens"], with_balance): bc for bc in bcs}
         for fu in as_completed(futs):
@@ -660,13 +692,22 @@ def main():
                     cty_tot[c] = cty_tot.get(c, 0) + (usd(r["spend"], curmap.get(r["advertiser_id"])) or 0) / len(codes)
             bal_usd = sum(usd(float(b["balance"]), b.get("currency")) or 0
                           for b in bal.values() if b.get("balance") not in (None, ""))
-            w7, p7, mtd = tot_usd(res["w7"]), tot_usd(res["p7"]), tot_usd(res["mtd"])
+            w7, p7, mtd, qtd = tot_usd(res["w7"]), tot_usd(res["p7"]), tot_usd(res["mtd"]), tot_usd(res["qtd"])
             dim = calendar.monthrange(end.year, end.month)[1]
             avg7 = w7 / 7
             forecast = mtd + avg7 * (dim - end.day)
+            q_end_m = 3 * ((end.month - 1) // 3) + 3
+            q_end = dt.date(end.year, q_end_m, calendar.monthrange(end.year, q_end_m)[1])
+            forecast_q = qtd + avg7 * (q_end - end).days
+            for r in res["mtd"]:
+                if r["spend"] > 0:
+                    acc_bcs.setdefault(r["advertiser_id"], {})[bc["bc_id"]] = usd(r["spend"], curmap.get(r["advertiser_id"])) or 0
+            mtd_by_bc[bc["bc_id"]] = mtd
             summary.append({
                 "bc": bc, "y": day_usd[str(end)], "p": day_usd[prev], "w7": w7, "p7": p7, "avg7": avg7,
                 "mtd": mtd, "fc": forecast, "n": n_active, "bal": bal_usd if bal else None,
+                "qtd": qtd, "fq": forecast_q, "n_mtd": sum(1 for r in res["mtd"] if r["spend"] > 0),
+                "n_all": len(bal) or None,
                 "obj": fmt_objectives(obj_tot), "cty": ", ".join(k for k, _ in sorted(cty_tot.items(), key=lambda x: -x[1])[:3]),
             })
             print(f"BC {bc['name']}: {n_active} TK chi tieu | hom qua {day_usd[str(end)]:,.2f} USD | thang nay {mtd:,.2f} USD")
@@ -704,8 +745,7 @@ def main():
                                          f"{f[F_BC_ID]}|{f[F_ADV_NAME]}|{f[F_DATE]}"), existing)
     print(f"Bang chi tiet: them moi {c}, cap nhat {u}.")
 
-    # 2) Bang Tong hop BC: MOI BC 1 DONG, cap nhat moi sang (khong sinh dong moi moi ngay).
-    #    Cot "Ngân sách tháng (USD)" do quan ly tu nhap truc tiep -> script chi doc, khong ghi de.
+    # ---------- 2) Ngan sach: doc tu Bao cao BC (uu tien) hoac Tong hop BC ----------
     month = month_label(end)
     summ = Table(lark, lark.ensure_table(T_SUMMARY, S_FIELDS), S_FIELDS)
     ex_sum, budgets = {}, {}
@@ -717,28 +757,55 @@ def main():
         v = fr.get("Ngân sách tháng (USD)")
         if v not in (None, "") and bcid not in budgets:
             budgets[bcid] = float(v)
-    rows = []
+
+    rep_tbl, rep_rows = None, {}
+    rep_id = lark.find_table(T_REPORT)
+    if rep_id:
+        rep_tbl = Table(lark, rep_id, R_FIELDS)
+        print("Cot trong Bao cao BC:", ", ".join(f"{k}({v})" for k, v in rep_tbl.types.items()))
+        for rid, fr in rep_tbl.scan():
+            bcid = cell_text(fr.get("ID BC")).strip()
+            if not bcid:
+                continue
+            rep_rows.setdefault(bcid, rid)
+            v = fr.get("Ngân sách tháng (USD)")
+            if v not in (None, ""):
+                budgets[bcid] = float(v)
+
+    # ---------- 3) Tinh canh bao + ghi Tong hop BC ----------
+    rows, rep_updates = [], []
     for s in summary:
         bcid = s["bc"]["bc_id"]
         budget = budgets.get(bcid)
         dchg, wchg = pct(s["y"], s["p"]), pct(s["w7"], s["p7"])
-        alerts = []
+        red, orange = [], []
         if s["p"] >= alert_min and s["y"] == 0:
-            alerts.append("⛔ Ngừng chi tiêu")
+            red.append("⛔ Ngừng chi tiêu (hôm kia còn chạy)")
         elif dchg is not None and max(s["y"], s["p"]) >= alert_min:
             if dchg >= alert_pct:
-                alerts.append(f"🔺 Tăng mạnh {dchg:+.0f}% so với hôm kia")
+                orange.append(f"🔺 Tăng {dchg:+.0f}% so với hôm kia")
             elif dchg <= -alert_pct:
-                alerts.append(f"🔻 Giảm mạnh {dchg:+.0f}% so với hôm kia")
+                orange.append(f"🔻 Giảm {dchg:+.0f}% so với hôm kia")
+        if wchg is not None and max(s["w7"], s["p7"]) >= alert_min * 7 and wchg <= -alert_pct:
+            orange.append(f"📉 7 ngày giảm {wchg:+.0f}%")
         if budget:
             if s["mtd"] >= budget:
-                alerts.append("🚨 Đã vượt ngân sách tháng")
+                red.append(f"🚨 Vượt ngân sách tháng {s['mtd'] - budget:,.0f} USD")
             elif s["mtd"] >= 0.9 * budget:
-                alerts.append("⚠️ Đã dùng ≥90% ngân sách")
+                orange.append("⚠️ Đã dùng ≥90% ngân sách")
             if s["fc"] > budget and s["mtd"] < budget:
-                alerts.append(f"⚠️ Dự kiến vượt ngân sách {s['fc'] - budget:,.0f} USD")
+                orange.append(f"⚠️ Dự kiến vượt ngân sách {s['fc'] - budget:,.0f} USD")
         if s["bal"] is not None and s["avg7"] > 0 and s["bal"] < s["avg7"] * low_days:
-            alerts.append(f"💰 Số dư chỉ đủ ~{s['bal'] / s['avg7']:.1f} ngày")
+            (red if s["bal"] < s["avg7"] else orange).append(f"💰 Số dư chỉ đủ ~{s['bal'] / s['avg7']:.1f} ngày")
+        if red:
+            level = "🔴 Khẩn cấp"
+        elif orange:
+            level = "🟠 Cần chú ý"
+        elif s["w7"] == 0 and s["mtd"] == 0:
+            level = "⚪ Không chi tiêu"
+        else:
+            level = "🟢 Bình thường"
+        alert_txt = " | ".join(red + orange) or "✅ Bình thường"
         trend = "Ổn định"
         if wchg is not None:
             trend = "📈 Tăng" if wchg >= 10 else ("📉 Giảm" if wchg <= -10 else "Ổn định")
@@ -746,6 +813,7 @@ def main():
             trend = "🆕 Mới chi tiêu"
         elif s["w7"] == 0:
             trend = "Không chi tiêu"
+        s.update(level=level, alert=alert_txt, trend=trend, dchg=dchg, wchg=wchg, budget=budget)
         rows.append({
             S_KEY: bcid, "Ngày": str(end), "Tên BC": s["bc"]["name"], "ID BC": bcid, "Tháng": month,
             "Số TK có chi tiêu": s["n"], "Spend hôm qua (USD)": round(s["y"], 2),
@@ -757,16 +825,117 @@ def main():
             "% dự kiến/ngân sách": round(s["fc"] / budget * 100, 1) if budget else None,
             "Ngân sách còn lại (USD)": round(budget - s["mtd"], 2) if budget else None,
             "Số dư TK (USD)": round(s["bal"], 2) if s["bal"] is not None else None,
-            "Xu hướng": trend, "Cảnh báo": " | ".join(alerts) or "✅ Bình thường",
+            "Xu hướng": trend, "Cảnh báo": alert_txt,
             "Loại hình chính": s["obj"], "Quốc gia chính": s["cty"], "Cập nhật lúc": now_ms,
         })
+        if bcid in rep_rows:
+            rep_updates.append({"record_id": rep_rows[bcid], "fields": rep_tbl.convert({
+                "Mức cảnh báo": level, "Cảnh báo": alert_txt, "Xu hướng": trend,
+                "Spend hôm qua (USD)": round(s["y"], 2), "% so với hôm kia": dchg,
+                "Spend 7 ngày (USD)": round(s["w7"], 2), "Tăng trưởng (tuần)": wchg,
+                "Spend tháng này (USD)": round(s["mtd"], 2), "Dự kiến cả tháng (USD)": round(s["fc"], 2),
+                "Spend quý này (USD)": round(s["qtd"], 2), "Dự kiến hết Quý": round(s["fq"], 2),
+                "TB/ngày 7 ngày (USD)": round(s["avg7"], 2),
+                "TK chi tiêu hôm qua": s["n"], "TK chi tiêu tháng này": s["n_mtd"], "Tổng TK trong BC": s["n_all"],
+                "% ngân sách đã dùng": round(s["mtd"] / budget * 100, 1) if budget else None,
+                "Số dư TK (USD)": round(s["bal"], 2) if s["bal"] is not None else None,
+                "Cập nhật lúc": now_ms})})
     c2, u2 = summ.upsert(rows, lambda f: (f["ID BC"],), ex_sum)
-    n_alert = sum(1 for r in rows if r["Cảnh báo"] != "✅ Bình thường")
-    total_y = sum(s["y"] for s in summary)
-    print(f"Bang Tong hop BC: them moi {c2}, cap nhat {u2} | {n_alert} BC co canh bao.")
-    print(f"Xong sau {time.time() - t0:.0f}s. Tong spend {end}: {total_y:,.2f} USD | thang {month}: "
-          f"{sum(s['mtd'] for s in summary):,.2f} USD | du kien ca thang: {sum(s['fc'] for s in summary):,.2f} USD")
+    print(f"Bang Tong hop BC: them moi {c2}, cap nhat {u2}.")
+    if rep_tbl:
+        rep_tbl.batch("batch_update", rep_updates)
+        missing = [s for s in summary if s["bc"]["bc_id"] not in rep_rows and s["mtd"] > 0]
+        print(f"Bang Bao cao BC: cap nhat {len(rep_updates)}/{len(rep_rows)} BC.")
+        if missing:
+            print("   BC co chi tieu thang nay nhung CHUA co trong Bao cao BC: " +
+                  "; ".join(f"{s['bc']['name']} ({s['bc']['bc_id']}) {s['mtd']:,.0f} USD" for s in missing))
 
+    # ---------- 4) Bang Tong theo ngay (moi BC x moi ngay) ----------
+    daily_tbl = Table(lark, lark.ensure_table(T_DAILY, D_FIELDS), D_FIELDS)
+    agg = {}
+    for f in detail:
+        k = (f[F_BC_ID], f[F_DATE])
+        a = agg.setdefault(k, {"Mã dòng": f"{f[F_BC_ID]}|{f[F_DATE]}", "Ngày": f[F_DATE], "Tuần": f[F_WEEK],
+                               "Tháng": f[F_MONTH], "Tên BC": f[F_BC_NAME], "ID BC": f[F_BC_ID],
+                               "Spend (USD)": 0.0, "Số TK chi tiêu": 0, "Cập nhật lúc": now_ms})
+        a["Spend (USD)"] = round(a["Spend (USD)"] + (f.get(F_SPEND_USD) or 0), 2)
+        a["Số TK chi tiêu"] += 1
+    try:
+        drecs = daily_tbl.scan({"field_names": ["Mã dòng"], "filter": date_filter("Ngày", dates, True)})
+    except RuntimeError:
+        drecs = daily_tbl.scan({"field_names": ["Mã dòng"]})
+    dex = {cell_text(fr.get("Mã dòng")): rid for rid, fr in drecs}
+    c3, u3 = daily_tbl.upsert(list(agg.values()), lambda f: (f["Mã dòng"],), dex)
+    print(f"Bang Tong theo ngay: them moi {c3}, cap nhat {u3}.")
+
+    # ---------- 5) Kiem tra sai sot ----------
+    audit(det, summary, acc_bcs, mtd_by_bc, month, end)
+
+    total_y = sum(s["y"] for s in summary)
+    n_red = sum(1 for s in summary if s["level"].startswith("🔴"))
+    n_or = sum(1 for s in summary if s["level"].startswith("🟠"))
+    print(f"Xong sau {time.time() - t0:.0f}s. Tong spend {end}: {total_y:,.2f} USD | thang {month}: "
+          f"{sum(s['mtd'] for s in summary):,.2f} USD | du kien ca thang: {sum(s['fc'] for s in summary):,.2f} USD"
+          f" | canh bao: {n_red} khan cap, {n_or} can chu y")
+
+
+def audit(det, summary, acc_bcs, mtd_by_bc, month, end):
+    """Doi soat: dong rac, dong trung, TK nam o nhieu BC, tong thang trong Base vs TikTok."""
+    print("===== KIEM TRA SAI SOT =====")
+    usd_col = det.alias.get(F_SPEND_USD, F_SPEND_USD)
+    names = [n for n in (F_BC_ID, F_ADV_ID, F_DATE, usd_col) if n in det.types]
+    recs = det.scan({"field_names": names})
+    empty_adv = zero = 0
+    seen, dup, dup_usd = {}, 0, 0.0
+    base_mtd = {}
+    junk_ids = []
+    for rid, fr in recs:
+        adv = cell_text(fr.get(F_ADV_ID))
+        v = fr.get(usd_col)
+        v = float(v) if v not in (None, "") else 0.0
+        d = fr.get(F_DATE)
+        d = ms_to_date(d) if isinstance(d, (int, float)) else cell_text(d)[:10]
+        bcid = cell_text(fr.get(F_BC_ID))
+        if not adv:
+            empty_adv += 1
+            junk_ids.append(rid)
+            continue
+        if v <= 0:
+            zero += 1
+            junk_ids.append(rid)
+            continue
+        k = f"{bcid}|{adv}|{d}"
+        if k in seen:
+            dup += 1
+            dup_usd += v
+            junk_ids.append(rid)
+            continue
+        seen[k] = rid
+        if d[:7] == month:
+            base_mtd[bcid] = base_mtd.get(bcid, 0) + v
+    print(f"Bang chi tiet: {len(recs)} dong | dong thieu Advertiser ID: {empty_adv} | dong spend = 0/trong: {zero} "
+          f"| dong trung: {dup} ({dup_usd:,.2f} USD bi cong 2 lan)")
+    multi = {a: b for a, b in acc_bcs.items() if len(b) > 1}
+    if multi:
+        extra = sum(sum(v.values()) - max(v.values()) for v in multi.values())
+        print(f"TK nam o nhieu BC (bi tinh o ca 2 BC): {len(multi)} TK, ~{extra:,.2f} USD thang nay bi cong lap. VD: "
+              + "; ".join(f"{a} -> {len(b)} BC" for a, b in list(multi.items())[:5]))
+    else:
+        print("TK nam o nhieu BC: khong co.")
+    bad = []
+    for bcid, tk in mtd_by_bc.items():
+        bv = base_mtd.get(bcid, 0)
+        if abs(bv - tk) > max(1, 0.01 * tk):
+            name = next((s["bc"]["name"] for s in summary if s["bc"]["bc_id"] == bcid), bcid)
+            bad.append(f"{name}: Base {bv:,.2f} vs TikTok {tk:,.2f}")
+    print(f"Doi soat tong thang {month} (Base vs TikTok, den {end}): " +
+          ("KHOP tat ca BC." if not bad else f"{len(bad)} BC lech -> " + " | ".join(bad[:15])))
+    if os.getenv("CLEAN_JUNK") == "1" and junk_ids:
+        for i in range(0, len(junk_ids), 500):
+            det.l.call("POST", f"{det.base}/records/batch_delete", {"records": junk_ids[i:i + 500]})
+        print(f"Da xoa {len(junk_ids)} dong rac/trung trong bang chi tiet.")
+    elif junk_ids:
+        print(f"=> Co {len(junk_ids)} dong rac/trung. Chay voi CLEAN_JUNK=1 de xoa.")
 
 if __name__ == "__main__":
     main()
