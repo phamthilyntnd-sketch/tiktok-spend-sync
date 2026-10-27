@@ -42,6 +42,11 @@ F_SPEND_USD = "Spend (USD)"
 F_RATE = "Tỷ giá (1 USD)"
 F_MONTH = "Tháng"
 F_WEEK = "Tuần"
+# Ten khac cua cot (khi ban doi ten cot trong Base, them ten moi vao day)
+ALIASES = {
+    F_SPEND: ["Spend (USD & VNĐ)", "Spend"],
+    F_SPEND_USD: ["Spend trong ngày (USD)", "Spend (USD)"],
+}
 
 
 def env(name, required=True, default=None):
@@ -55,7 +60,7 @@ def env(name, required=True, default=None):
 def tt_get(path, params, token):
     q = {k: json.dumps(v) if isinstance(v, (list, dict)) else v for k, v in params.items()}
     last = {}
-    for attempt in range(4):
+    for attempt in range(6):
         r = requests.get(TT_API + path, params=q, headers={"Access-Token": token}, timeout=60)
         try:
             j = r.json()
@@ -64,9 +69,9 @@ def tt_get(path, params, token):
         if j.get("code") == 0:
             return j.get("data") or {}
         last = j
-        if j.get("code") in (40001, 40002, 40100, 40105):
+        if j.get("code") in (40001, 40002, 40105):
             break  # loi tham so / quyen: khong can thu lai
-        time.sleep(2 * (attempt + 1))
+        time.sleep(3 * (attempt + 1))  # 40100 = vuot gioi han 10 lan goi/giay -> cho roi thu lai
     raise RuntimeError(f"TikTok {path} loi: {last.get('code')} - {last.get('message')}")
 
 
@@ -292,7 +297,15 @@ class Lark:
                   "Content-Type": "application/json; charset=utf-8"}
         self.base = f"{LARK_API}/bitable/v1/apps/{env('LARK_BASE_TOKEN')}/tables/{env('LARK_TABLE_ID')}"
         self.types = self._field_types()
+        self.alias = {}
+        for logical, names in ALIASES.items():  # nhan ca ten cot da doi
+            for n in names:
+                if n in self.types:
+                    self.alias[logical] = n
+                    break
         for name in (F_SPEND_USD, F_RATE):  # tu tao cot quy doi USD (kieu So)
+            if name in self.alias or name not in ALIASES and name in self.types:
+                continue
             if name not in self.types:
                 try:
                     self._call("POST", self.base + "/fields", {"field_name": name, "type": 2})
@@ -343,6 +356,7 @@ class Lark:
     def convert(self, fields):
         out = {}
         for name, val in fields.items():
+            name = self.alias.get(name, name)
             t = self.types.get(name)
             if t is None or val is None or val == "":
                 continue
