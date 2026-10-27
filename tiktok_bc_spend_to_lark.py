@@ -339,6 +339,14 @@ def pct(a, b):
     return round((a - b) / b * 100, 1) if b else None
 
 
+def note(*args):
+    """In ra log + hien thanh ghi chu (annotation) tren trang GitHub Actions."""
+    msg = " ".join(str(a) for a in args)
+    print(msg)
+    if os.getenv("GITHUB_ACTIONS"):
+        print("::notice::" + msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A"))
+
+
 # ----------------------------- Lark Base -----------------------------
 def date_to_ms(s):
     y, m, d = (int(x) for x in str(s)[:10].split("-"))
@@ -762,7 +770,7 @@ def main():
     rep_id = lark.find_table(T_REPORT)
     if rep_id:
         rep_tbl = Table(lark, rep_id, R_FIELDS)
-        print("Cot trong Bao cao BC:", ", ".join(f"{k}({v})" for k, v in rep_tbl.types.items()))
+        note("Cot trong Bao cao BC:", ", ".join(f"{k}({v})" for k, v in rep_tbl.types.items()))
         for rid, fr in rep_tbl.scan():
             bcid = cell_text(fr.get("ID BC")).strip()
             if not bcid:
@@ -841,13 +849,13 @@ def main():
                 "Số dư TK (USD)": round(s["bal"], 2) if s["bal"] is not None else None,
                 "Cập nhật lúc": now_ms})})
     c2, u2 = summ.upsert(rows, lambda f: (f["ID BC"],), ex_sum)
-    print(f"Bang Tong hop BC: them moi {c2}, cap nhat {u2}.")
+    note(f"Bang Tong hop BC: them moi {c2}, cap nhat {u2}.")
     if rep_tbl:
         rep_tbl.batch("batch_update", rep_updates)
         missing = [s for s in summary if s["bc"]["bc_id"] not in rep_rows and s["mtd"] > 0]
-        print(f"Bang Bao cao BC: cap nhat {len(rep_updates)}/{len(rep_rows)} BC.")
+        note(f"Bang Bao cao BC: cap nhat {len(rep_updates)}/{len(rep_rows)} BC.")
         if missing:
-            print("   BC co chi tieu thang nay nhung CHUA co trong Bao cao BC: " +
+            note("   BC co chi tieu thang nay nhung CHUA co trong Bao cao BC: " +
                   "; ".join(f"{s['bc']['name']} ({s['bc']['bc_id']}) {s['mtd']:,.0f} USD" for s in missing))
 
     # ---------- 4) Bang Tong theo ngay (moi BC x moi ngay) ----------
@@ -866,7 +874,7 @@ def main():
         drecs = daily_tbl.scan({"field_names": ["Mã dòng"]})
     dex = {cell_text(fr.get("Mã dòng")): rid for rid, fr in drecs}
     c3, u3 = daily_tbl.upsert(list(agg.values()), lambda f: (f["Mã dòng"],), dex)
-    print(f"Bang Tong theo ngay: them moi {c3}, cap nhat {u3}.")
+    note(f"Bang Tong theo ngay: them moi {c3}, cap nhat {u3}.")
 
     # ---------- 5) Kiem tra sai sot ----------
     audit(det, summary, acc_bcs, mtd_by_bc, month, end)
@@ -874,7 +882,7 @@ def main():
     total_y = sum(s["y"] for s in summary)
     n_red = sum(1 for s in summary if s["level"].startswith("🔴"))
     n_or = sum(1 for s in summary if s["level"].startswith("🟠"))
-    print(f"Xong sau {time.time() - t0:.0f}s. Tong spend {end}: {total_y:,.2f} USD | thang {month}: "
+    note(f"Xong sau {time.time() - t0:.0f}s. Tong spend {end}: {total_y:,.2f} USD | thang {month}: "
           f"{sum(s['mtd'] for s in summary):,.2f} USD | du kien ca thang: {sum(s['fc'] for s in summary):,.2f} USD"
           f" | canh bao: {n_red} khan cap, {n_or} can chu y")
 
@@ -913,29 +921,29 @@ def audit(det, summary, acc_bcs, mtd_by_bc, month, end):
         seen[k] = rid
         if d[:7] == month:
             base_mtd[bcid] = base_mtd.get(bcid, 0) + v
-    print(f"Bang chi tiet: {len(recs)} dong | dong thieu Advertiser ID: {empty_adv} | dong spend = 0/trong: {zero} "
+    note(f"Bang chi tiet: {len(recs)} dong | dong thieu Advertiser ID: {empty_adv} | dong spend = 0/trong: {zero} "
           f"| dong trung: {dup} ({dup_usd:,.2f} USD bi cong 2 lan)")
     multi = {a: b for a, b in acc_bcs.items() if len(b) > 1}
     if multi:
         extra = sum(sum(v.values()) - max(v.values()) for v in multi.values())
-        print(f"TK nam o nhieu BC (bi tinh o ca 2 BC): {len(multi)} TK, ~{extra:,.2f} USD thang nay bi cong lap. VD: "
+        note(f"TK nam o nhieu BC (bi tinh o ca 2 BC): {len(multi)} TK, ~{extra:,.2f} USD thang nay bi cong lap. VD: "
               + "; ".join(f"{a} -> {len(b)} BC" for a, b in list(multi.items())[:5]))
     else:
-        print("TK nam o nhieu BC: khong co.")
+        note("TK nam o nhieu BC: khong co.")
     bad = []
     for bcid, tk in mtd_by_bc.items():
         bv = base_mtd.get(bcid, 0)
         if abs(bv - tk) > max(1, 0.01 * tk):
             name = next((s["bc"]["name"] for s in summary if s["bc"]["bc_id"] == bcid), bcid)
             bad.append(f"{name}: Base {bv:,.2f} vs TikTok {tk:,.2f}")
-    print(f"Doi soat tong thang {month} (Base vs TikTok, den {end}): " +
+    note(f"Doi soat tong thang {month} (Base vs TikTok, den {end}): " +
           ("KHOP tat ca BC." if not bad else f"{len(bad)} BC lech -> " + " | ".join(bad[:15])))
     if os.getenv("CLEAN_JUNK") == "1" and junk_ids:
         for i in range(0, len(junk_ids), 500):
             det.l.call("POST", f"{det.base}/records/batch_delete", {"records": junk_ids[i:i + 500]})
         print(f"Da xoa {len(junk_ids)} dong rac/trung trong bang chi tiet.")
     elif junk_ids:
-        print(f"=> Co {len(junk_ids)} dong rac/trung. Chay voi CLEAN_JUNK=1 de xoa.")
+        note(f"=> Co {len(junk_ids)} dong rac/trung. Chay voi CLEAN_JUNK=1 de xoa.")
 
 if __name__ == "__main__":
     main()
