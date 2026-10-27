@@ -704,24 +704,19 @@ def main():
                                          f"{f[F_BC_ID]}|{f[F_ADV_NAME]}|{f[F_DATE]}"), existing)
     print(f"Bang chi tiet: them moi {c}, cap nhat {u}.")
 
-    # 2) Bang Ngan sach BC: dam bao moi BC co 1 dong cho thang nay (quan ly tu nhap so)
+    # 2) Bang Tong hop BC: MOI BC 1 DONG, cap nhat moi sang (khong sinh dong moi moi ngay).
+    #    Cot "Ngân sách tháng (USD)" do quan ly tu nhap truc tiep -> script chi doc, khong ghi de.
     month = month_label(end)
-    bud = Table(lark, lark.ensure_table(T_BUDGET, B_FIELDS), B_FIELDS)
-    budgets, bud_exist = {}, {}
-    for rid, fr in bud.scan():
-        key = cell_text(fr.get("Mã dòng"))
-        bud_exist[key] = rid
-        v = fr.get("Ngân sách tháng (USD)")
-        if cell_text(fr.get("Tháng")) == month and v not in (None, ""):
-            budgets[cell_text(fr.get("ID BC"))] = float(v)
-    new_bud = [{"Mã dòng": f"{month}|{s['bc']['bc_id']}", "Tháng": month, "Tên BC": s["bc"]["name"],
-                "ID BC": s["bc"]["bc_id"]} for s in summary if f"{month}|{s['bc']['bc_id']}" not in bud_exist]
-    if new_bud:
-        bud.batch("batch_create", [{"fields": bud.convert(f)} for f in new_bud])
-        print(f"Bang Ngan sach BC: them {len(new_bud)} dong cho thang {month} (cho quan ly nhap ngan sach).")
-
-    # 3) Bang Tong hop BC
     summ = Table(lark, lark.ensure_table(T_SUMMARY, S_FIELDS), S_FIELDS)
+    ex_sum, budgets = {}, {}
+    for rid, fr in summ.scan({"field_names": ["ID BC", "Ngân sách tháng (USD)"]}):
+        bcid = cell_text(fr.get("ID BC"))
+        if not bcid:
+            continue
+        ex_sum.setdefault(bcid, rid)
+        v = fr.get("Ngân sách tháng (USD)")
+        if v not in (None, "") and bcid not in budgets:
+            budgets[bcid] = float(v)
     rows = []
     for s in summary:
         bcid = s["bc"]["bc_id"]
@@ -752,13 +747,12 @@ def main():
         elif s["w7"] == 0:
             trend = "Không chi tiêu"
         rows.append({
-            S_KEY: f"{bcid}|{end}", "Ngày": str(end), "Tên BC": s["bc"]["name"], "ID BC": bcid, "Tháng": month,
+            S_KEY: bcid, "Ngày": str(end), "Tên BC": s["bc"]["name"], "ID BC": bcid, "Tháng": month,
             "Số TK có chi tiêu": s["n"], "Spend hôm qua (USD)": round(s["y"], 2),
             "Spend hôm kia (USD)": round(s["p"], 2), "% so với hôm kia": dchg,
             "Spend 7 ngày (USD)": round(s["w7"], 2), "Spend 7 ngày trước (USD)": round(s["p7"], 2),
             "% 7 ngày": wchg, "TB/ngày 7 ngày (USD)": round(s["avg7"], 2),
             "Spend tháng này (USD)": round(s["mtd"], 2), "Dự kiến cả tháng (USD)": round(s["fc"], 2),
-            "Ngân sách tháng (USD)": budget,
             "% ngân sách đã dùng": round(s["mtd"] / budget * 100, 1) if budget else None,
             "% dự kiến/ngân sách": round(s["fc"] / budget * 100, 1) if budget else None,
             "Ngân sách còn lại (USD)": round(budget - s["mtd"], 2) if budget else None,
@@ -766,8 +760,7 @@ def main():
             "Xu hướng": trend, "Cảnh báo": " | ".join(alerts) or "✅ Bình thường",
             "Loại hình chính": s["obj"], "Quốc gia chính": s["cty"], "Cập nhật lúc": now_ms,
         })
-    ex_sum = {cell_text(fr.get(S_KEY)): rid for rid, fr in summ.scan({"field_names": [S_KEY]})}
-    c2, u2 = summ.upsert(rows, lambda f: (f[S_KEY],), ex_sum)
+    c2, u2 = summ.upsert(rows, lambda f: (f["ID BC"],), ex_sum)
     n_alert = sum(1 for r in rows if r["Cảnh báo"] != "✅ Bình thường")
     total_y = sum(s["y"] for s in summary)
     print(f"Bang Tong hop BC: them moi {c2}, cap nhat {u2} | {n_alert} BC co canh bao.")
