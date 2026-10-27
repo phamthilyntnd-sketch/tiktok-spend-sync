@@ -655,9 +655,9 @@ def main():
                     obj_tot[k] = obj_tot.get(k, 0) + v
             cty_tot = {}
             for r in res["mtd"]:
-                c = attr.get(r["advertiser_id"], {}).get("country") or ""
-                if c:
-                    cty_tot[c] = cty_tot.get(c, 0) + (usd(r["spend"], curmap.get(r["advertiser_id"])) or 0)
+                codes = [x for x in (attr.get(r["advertiser_id"], {}).get("country") or "").split(",") if x]
+                for c in codes:  # TK nhieu quoc gia -> chia deu spend
+                    cty_tot[c] = cty_tot.get(c, 0) + (usd(r["spend"], curmap.get(r["advertiser_id"])) or 0) / len(codes)
             bal_usd = sum(usd(float(b["balance"]), b.get("currency")) or 0
                           for b in bal.values() if b.get("balance") not in (None, ""))
             w7, p7, mtd = tot_usd(res["w7"]), tot_usd(res["p7"]), tot_usd(res["mtd"])
