@@ -225,31 +225,43 @@ def get_balances(bc_id, token):
 
 
 def get_attributes(bc_id, adv_ids, token):
-    """Quoc gia / mui gio / tien te cua tai khoan (API cap BC)."""
+    """Quoc gia / tien te cua tung tai khoan (API cap BC tra ve dang gop -> hoi tung TK)."""
     out = {}
-    for i in range(0, len(adv_ids), 100):
+    for adv in adv_ids:
         try:
-            data = tt_get("/bc/advertiser/attribute/", {"bc_id": bc_id, "advertiser_ids": adv_ids[i:i + 100]}, token)
+            data = tt_get("/bc/advertiser/attribute/", {"bc_id": bc_id, "advertiser_ids": [adv]}, token)
         except RuntimeError as e:
-            print(f"   (thuoc tinh TK: {e})")
-            return out
-        items = data.get("list") or data.get("advertiser_list") or data.get("attributes") or []
-        if isinstance(data, dict) and not items:
-            for v in data.values():  # tim mang du lieu bat ky
-                if isinstance(v, list) and v and isinstance(v[0], dict):
-                    items = v
-                    break
-        if not DBG.get("attr"):
-            DBG["attr"] = 1
-            print("   [CHAN DOAN] thuoc tinh TK tra ve:", json.dumps(data, ensure_ascii=False)[:600])
-        for it in items:
-            adv = str(it.get("advertiser_id", ""))
-            out[adv] = {
-                "country": it.get("region_code") or it.get("country_code") or it.get("country") or it.get("region") or "",
-                "tz": it.get("display_timezone") or it.get("timezone") or "",
-                "currency": it.get("currency") or "",
-            }
+            if not DBG.get("attr_err"):
+                DBG["attr_err"] = 1
+                print(f"   [CHAN DOAN] thuoc tinh TK loi: {e}")
+            continue
+        regions = data.get("region_codes") or []
+        curs = data.get("currencies") or []
+        out[adv] = {"country": ",".join(regions), "tz": "", "currency": curs[0] if len(curs) == 1 else ""}
     return out
+
+
+def get_objectives_bc(bc_id, day, token):
+    """Thu lay spend theo muc tieu chien dich o cap BC (khong can chi dinh vao TK)."""
+    for dims in (["advertiser_id", "objective_type"], ["objective_type", "advertiser_id"]):
+        params = {"report_type": "BC", "bc_id": bc_id, "dimensions": dims, "metrics": ["spend"],
+                  "start_date": day, "end_date": day}
+        try:
+            out = {}
+            for it in tt_pages("/report/integrated/get/", params, token, page_size=1000):
+                d, m = it.get("dimensions") or {}, it.get("metrics") or {}
+                sp = float(m.get("spend") or 0)
+                if sp > 0:
+                    adv = str(d.get("advertiser_id", ""))
+                    k = str(d.get("objective_type") or "KHAC")
+                    out.setdefault(adv, {})[k] = out.get(adv, {}).get(k, 0) + sp
+            return out
+        except RuntimeError as e:
+            last = e
+    if not DBG.get("obj_bc"):
+        DBG["obj_bc"] = 1
+        print(f"   [CHAN DOAN] loai hinh cap BC khong ho tro: {last}")
+    return None
 
 
 def get_objectives(adv_id, day, token):
@@ -499,7 +511,12 @@ def process_bc(bc, start, end, tokens, with_balance):
     if active:
         res["attr"] = get_attributes(bc["bc_id"], active, tk)
     if os.getenv("FETCH_OBJECTIVE", "1") == "1":
+        by_bc = get_objectives_bc(bc["bc_id"], end, tk)
+        if by_bc is not None:
+            res["obj"] = by_bc
         for adv in sorted({r["advertiser_id"] for r in res["daily"] if r["spend"] > 0 and r["date"] == end}):
+            if adv in res["obj"]:
+                continue
             for t in tokens:
                 try:
                     res["obj"][adv] = get_objectives(adv, end, t)
