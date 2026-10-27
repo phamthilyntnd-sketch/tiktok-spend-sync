@@ -40,6 +40,8 @@ F_CURRENCY = "Tiền tệ"
 F_UPDATED = "Cập nhật lúc"
 F_SPEND_USD = "Spend (USD)"
 F_RATE = "Tỷ giá (1 USD)"
+F_MONTH = "Tháng"
+F_WEEK = "Tuần"
 
 
 def env(name, required=True, default=None):
@@ -229,6 +231,18 @@ def get_balances(bc_id, token):
     return out
 
 
+def month_label(ds):
+    return ds[:7]  # vd 2026-10
+
+
+def week_label(ds):
+    d = dt.date.fromisoformat(ds[:10])
+    y, w, _ = d.isocalendar()
+    mon = d - dt.timedelta(days=d.weekday())
+    sun = mon + dt.timedelta(days=6)
+    return f"{y}-W{w:02d} ({mon:%d/%m}-{sun:%d/%m})"  # vd 2026-W44 (26/10-01/11)
+
+
 # ----------------------------- Ty gia -----------------------------
 def get_fx():
     """So don vi tien te / 1 USD. Uu tien bien FX_RATES (vd: VND=26300,THB=36), sau do lay tu open.er-api.com."""
@@ -283,6 +297,14 @@ class Lark:
                 try:
                     self._call("POST", self.base + "/fields", {"field_name": name, "type": 2})
                     self.types[name] = 2
+                    print(f"Da tu tao cot '{name}' trong Base.")
+                except RuntimeError as e:
+                    print(f"[GOI Y] Khong tao duoc cot '{name}': {e}")
+        for name in (F_MONTH, F_WEEK):  # cot loc theo thang / tuan (Van ban)
+            if name not in self.types:
+                try:
+                    self._call("POST", self.base + "/fields", {"field_name": name, "type": 1})
+                    self.types[name] = 1
                     print(f"Da tu tao cot '{name}' trong Base.")
                 except RuntimeError as e:
                     print(f"[GOI Y] Khong tao duoc cot '{name}': {e}")
@@ -462,6 +484,7 @@ def main():
                     F_BC_NAME: bc["name"], F_BC_ID: bc["bc_id"], F_ADV_ID: r["advertiser_id"],
                     F_ADV_NAME: b.get("name") or r.get("name") or r["advertiser_id"], F_DATE: r["date"],
                     F_SPEND: round(r["spend"], 2), F_CURRENCY: cur, F_UPDATED: now_ms,
+                    F_MONTH: month_label(r["date"]), F_WEEK: week_label(r["date"]),
                 }
                 if cur and cur in fx:
                     f[F_RATE] = fx[cur]
