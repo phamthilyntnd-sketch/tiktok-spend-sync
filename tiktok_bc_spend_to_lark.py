@@ -38,6 +38,8 @@ F_BALANCE = "Số dư"
 F_BUDGET = "Budget còn lại"
 F_CURRENCY = "Tiền tệ"
 F_UPDATED = "Cập nhật lúc"
+F_SPEND_USD = "Spend (USD)"
+F_RATE = "Tỷ giá (1 USD)"
 
 
 def env(name, required=True, default=None):
@@ -98,6 +100,8 @@ def _parse_report(items):
             "advertiser_id": str(d.get("advertiser_id", "")),
             "date": str(d.get("stat_time_day", ""))[:10],
             "spend": float(m.get("spend") or 0),
+            "currency": str(m.get("currency") or ""),
+            "name": str(m.get("advertiser_name") or ""),
         })
     return rows
 
@@ -166,12 +170,21 @@ def get_spend(bc_id, adv_ids, start, end, token):
         d0 = dt.date.fromisoformat(start)
         d1 = dt.date.fromisoformat(end)
         rows = []
+        metric_sets = [["spend", "currency", "advertiser_name"], ["spend", "currency"], ["spend"]]
         day = d0
         while day <= d1:
             ds = str(day)
-            params = {"report_type": "BC", "bc_id": bc_id, "dimensions": ["advertiser_id"],
-                      "metrics": ["spend"], "start_date": ds, "end_date": ds}
-            for r in _parse_report(tt_pages("/report/integrated/get/", params, token, page_size=1000)):
+            for mi, metrics in enumerate(metric_sets):
+                params = {"report_type": "BC", "bc_id": bc_id, "dimensions": ["advertiser_id"],
+                          "metrics": metrics, "start_date": ds, "end_date": ds}
+                try:
+                    got = _parse_report(tt_pages("/report/integrated/get/", params, token, page_size=1000))
+                    metric_sets = metric_sets[mi:]  # nho bo metrics dung duoc cho cac ngay sau
+                    break
+                except RuntimeError:
+                    if mi == len(metric_sets) - 1:
+                        raise
+            for r in got:
                 r["date"] = ds
                 rows.append(r)
             day += dt.timedelta(days=1)
@@ -216,6 +229,24 @@ def get_balances(bc_id, token):
     return out
 
 
+# ----------------------------- Ty gia -----------------------------
+def get_fx():
+    """So don vi tien te / 1 USD. Uu tien bien FX_RATES (vd: VND=26300,THB=36), sau do lay tu open.er-api.com."""
+    rates = {"USD": 1.0}
+    try:
+        j = requests.get("https://open.er-api.com/v6/latest/USD", timeout=30).json()
+        if j.get("result") == "success":
+            rates.update({k: float(v) for k, v in j["rates"].items()})
+            print(f"Ty gia ngay {j.get('time_last_update_utc', '')[:16]}: 1 USD = {rates.get('VND', 0):,.0f} VND")
+    except Exception as e:
+        print(f"[CANH BAO] Khong lay duoc ty gia online: {e}")
+    for part in (os.getenv("FX_RATES") or "").split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            rates[k.strip().upper()] = float(v)
+    return rates
+
+
 # ----------------------------- Lark Base -----------------------------
 def date_to_ms(s):
     y, m, d = (int(x) for x in s[:10].split("-"))
@@ -247,6 +278,14 @@ class Lark:
                   "Content-Type": "application/json; charset=utf-8"}
         self.base = f"{LARK_API}/bitable/v1/apps/{env('LARK_BASE_TOKEN')}/tables/{env('LARK_TABLE_ID')}"
         self.types = self._field_types()
+        for name in (F_SPEND_USD, F_RATE):  # tu tao cot quy doi USD (kieu So)
+            if name not in self.types:
+                try:
+                    self._call("POST", self.base + "/fields", {"field_name": name, "type": 2})
+                    self.types[name] = 2
+                    print(f"Da tu tao cot '{name}' trong Base.")
+                except RuntimeError as e:
+                    print(f"[GOI Y] Khong tao duoc cot '{name}': {e}")
         if F_ADV_ID not in self.types:  # tu tao cot Advertiser ID de chong trung chinh xac
             try:
                 self._call("POST", self.base + "/fields", {"field_name": F_ADV_ID, "type": 1})
@@ -396,6 +435,8 @@ def main():
         print(f"[TOKEN {i}] thay {len(found)} BC ({len(new)} BC moi)")
     print(f"Dong bo {start} -> {end} | {len(bcs)} BC | {len(tokens)} token | chay song song {workers} BC")
 
+    fx = get_fx()
+    no_cur = set()
     rows, seen, summary = [], set(), []
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(process_bc, bc, str(start), str(end), bc["tokens"], with_balance): bc for bc in bcs}
@@ -416,20 +457,28 @@ def main():
                     continue
                 seen.add(key)
                 b = bal.get(r["advertiser_id"], {})
+                cur = (b.get("currency") or r.get("currency") or "").upper()
                 f = {
                     F_BC_NAME: bc["name"], F_BC_ID: bc["bc_id"], F_ADV_ID: r["advertiser_id"],
-                    F_ADV_NAME: b.get("name") or r["advertiser_id"], F_DATE: r["date"],
-                    F_SPEND: round(r["spend"], 2), F_CURRENCY: b.get("currency", ""), F_UPDATED: now_ms,
+                    F_ADV_NAME: b.get("name") or r.get("name") or r["advertiser_id"], F_DATE: r["date"],
+                    F_SPEND: round(r["spend"], 2), F_CURRENCY: cur, F_UPDATED: now_ms,
                 }
+                if cur and cur in fx:
+                    f[F_RATE] = fx[cur]
+                    f[F_SPEND_USD] = round(r["spend"] / fx[cur], 2)
+                else:
+                    no_cur.add(r["advertiser_id"])
                 if r["date"] == str(end):
                     f[F_BALANCE] = b.get("balance")
                     f[F_BUDGET] = b.get("budget")
-                    total_end += r["spend"]
+                    total_end += f.get(F_SPEND_USD) or 0
                 rows.append(f)
                 n += 1
             summary.append((bc["name"], n, total_end))
-            print(f"BC {bc['name']}: {n} dong co spend | tong spend {end}: {total_end:,.2f}")
+            print(f"BC {bc['name']}: {n} dong co spend | tong spend {end}: {total_end:,.2f} USD")
 
+    if no_cur:
+        print(f"[CANH BAO] {len(no_cur)} tai khoan chua biet tien te -> chua quy doi USD: {', '.join(sorted(no_cur)[:20])}")
     print(f"Lay du lieu TikTok xong sau {time.time() - t0:.0f}s, tong {len(rows)} dong.")
     lark_ready = all(os.getenv(k) for k in ("LARK_APP_ID", "LARK_APP_SECRET", "LARK_BASE_TOKEN", "LARK_TABLE_ID"))
     if dry or not lark_ready:
@@ -456,7 +505,7 @@ def main():
             to_create.append({"fields": fields})
     lark.batch("batch_create", to_create)
     lark.batch("batch_update", to_update)
-    print(f"Xong sau {time.time() - t0:.0f}s: them moi {len(to_create)}, cap nhat {len(to_update)}.")
+    print(f"Xong sau {time.time() - t0:.0f}s: them moi {len(to_create)}, cap nhat {len(to_update)}. Tong spend ngay {end}: {sum(f.get(F_SPEND_USD) or 0 for f in rows if f[F_DATE] == str(end)):,.2f} USD")
 
 
 if __name__ == "__main__":
