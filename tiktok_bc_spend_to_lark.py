@@ -84,6 +84,9 @@ OBJECTIVES = {
 }
 
 
+DBG = {}
+
+
 def env(name, required=True, default=None):
     val = os.getenv(name, default)
     if required and not val:
@@ -231,6 +234,14 @@ def get_attributes(bc_id, adv_ids, token):
             print(f"   (thuoc tinh TK: {e})")
             return out
         items = data.get("list") or data.get("advertiser_list") or data.get("attributes") or []
+        if isinstance(data, dict) and not items:
+            for v in data.values():  # tim mang du lieu bat ky
+                if isinstance(v, list) and v and isinstance(v[0], dict):
+                    items = v
+                    break
+        if not DBG.get("attr"):
+            DBG["attr"] = 1
+            print("   [CHAN DOAN] thuoc tinh TK tra ve:", json.dumps(data, ensure_ascii=False)[:600])
         for it in items:
             adv = str(it.get("advertiser_id", ""))
             out[adv] = {
@@ -248,6 +259,9 @@ def get_objectives(adv_id, day, token):
               "start_date": day, "end_date": day}
     agg = {}
     for it in tt_pages("/report/integrated/get/", params, token, page_size=1000):
+        if not DBG.get("obj_ok"):
+            DBG["obj_ok"] = 1
+            print("   [CHAN DOAN] loai hinh QC mau:", json.dumps(it, ensure_ascii=False)[:400])
         m = it.get("metrics") or {}
         sp = float(m.get("spend") or 0)
         if sp > 0:
@@ -490,7 +504,10 @@ def process_bc(bc, start, end, tokens, with_balance):
                 try:
                     res["obj"][adv] = get_objectives(adv, end, t)
                     break
-                except RuntimeError:
+                except RuntimeError as e:
+                    if not DBG.get("obj"):
+                        DBG["obj"] = 1
+                        print(f"   [CHAN DOAN] loai hinh QC loi: {e}")
                     continue
     return res
 
