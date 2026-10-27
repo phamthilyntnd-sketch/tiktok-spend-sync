@@ -34,5 +34,5 @@ jobs:
           LARK_BASE_TOKEN: ${{ secrets.LARK_BASE_TOKEN }}
           LARK_TABLE_ID: ${{ secrets.LARK_TABLE_ID }}
           DAYS_BACK: ${{ github.event.inputs.days_back || '2' }}
-          PARALLEL: "5"
+          PARALLEL: "3"
           FETCH_BALANCE: "1"
