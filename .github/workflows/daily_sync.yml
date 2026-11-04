@@ -8,9 +8,16 @@ on:
   workflow_dispatch:
     inputs:
       days_back:
-        description: "So ngay lay lai (1-30). Mac dinh 2"
+        description: "So ngay lay lai (1-62). Mac dinh 2"
         required: false
         default: "2"
+      months_back:
+        description: "So thang truoc lay lai cho bang theo thang (0-12). Mac dinh 0"
+        required: false
+        default: "0"
+concurrency:
+  group: tiktok-sync
+  cancel-in-progress: false
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -34,8 +41,12 @@ jobs:
           TT_ACCESS_TOKEN_10: ${{ secrets.TT_ACCESS_TOKEN_10 }}
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
-          LARK_BASE_TOKEN: ${{ secrets.LARK_BASE_TOKEN }}
-          LARK_TABLE_ID: ${{ secrets.LARK_TABLE_ID }}
-          DAYS_BACK: ${{ github.event.inputs.days_back || '2' }}
+          TT_APP_ID: ${{ secrets.TT_APP_ID }}
+          TT_APP_SECRET: ${{ secrets.TT_APP_SECRET }}
+          # Base "Cập nhật BC - LLC 2026 mới" (doi Base: sua dong duoi)
+          LARK_BASE_TOKEN: "HckTbAdYSafGYXsBVTYl4cdVgde"
+          # sua file .run-now = chay lai toan bo 60 ngay + 3 thang truoc
+          DAYS_BACK: ${{ github.event.inputs.days_back || (github.event_name == 'push' && '60') || '2' }}
+          MONTHS_BACK: ${{ github.event.inputs.months_back || (github.event_name == 'push' && '3') || '0' }}
           PARALLEL: "3"
           FETCH_BALANCE: "1"

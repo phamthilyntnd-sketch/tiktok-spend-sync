@@ -1,0 +1,23 @@
+name: Ket noi email TikTok (moi 15 phut)
+# Doc bang "Kết nối email TikTok" trong Lark: co auth_code moi -> doi sang token ngay
+on:
+  schedule:
+    - cron: "4,19,34,49 * * * *"
+  workflow_dispatch:
+jobs:
+  connect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - run: python tiktok_bc_spend_to_lark.py --connect
+        env:
+          TT_APP_ID: ${{ secrets.TT_APP_ID }}
+          TT_APP_SECRET: ${{ secrets.TT_APP_SECRET }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_BASE_TOKEN: "HckTbAdYSafGYXsBVTYl4cdVgde"
