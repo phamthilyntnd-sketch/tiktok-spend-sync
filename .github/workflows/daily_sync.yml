@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       days_back:
-        description: "So ngay lay lai (1-90). Mac dinh 2"
+        description: "So ngay lay lai (1-400). Mac dinh 2"
         required: false
         default: "2"
       months_back:
@@ -50,9 +50,9 @@ jobs:
           TT_APP_SECRET: ${{ secrets.TT_APP_SECRET }}
           # Base "Cập nhật BC - LLC 2026 mới" (doi Base: sua dong duoi)
           LARK_BASE_TOKEN: "HckTbAdYSafGYXsBVTYl4cdVgde"
-          # sua file .run-now = chay lai toan bo 90 ngay + 3 thang + 1 quy truoc
-          DAYS_BACK: ${{ github.event.inputs.days_back || (github.event_name == 'push' && '90') || '2' }}
-          MONTHS_BACK: ${{ github.event.inputs.months_back || (github.event_name == 'push' && '3') || '1' }}
-          QUARTERS_BACK: "1"
+          # sua file .run-now = chay lai tu dau nam (310 ngay, 10 thang, 3 quy)
+          DAYS_BACK: ${{ github.event.inputs.days_back || (github.event_name == 'push' && '310') || '2' }}
+          MONTHS_BACK: ${{ github.event.inputs.months_back || (github.event_name == 'push' && '10') || '1' }}
+          QUARTERS_BACK: ${{ (github.event_name == 'push' && '3') || '1' }}
           PARALLEL: "3"
           FETCH_BALANCE: "1"

@@ -91,7 +91,7 @@ D_FIELDS = [("Mã dòng", 1), ("Ngày", 5), ("Tuần", 1), ("Tháng", 1), ("Tên
 #   Chi tai khoan CO chi tieu moi co dong -> tai khoan lau khong dung tu dong khong hien.
 T_REP = "Báo cáo BC"
 T_ACC = "Chi tiết acc"
-KEEP_DETAIL_DAYS = int(os.getenv("KEEP_DETAIL_DAYS", "90"))
+KEEP_DETAIL_DAYS = int(os.getenv("KEEP_DETAIL_DAYS", "400"))  # Base nang len 50.000 dong
 K_KIND, K_PERIOD, K_CUR, K_KEY = "Loại kỳ", "Kỳ", "Kỳ hiện tại", "Mã dòng"
 REP_FIELDS = [  # 1 van ban, 2 so, 3 chon 1, 5 ngay, 7 checkbox
     ("Tên BC", 1), ("ID BC", 1), (K_KIND, 3), (K_PERIOD, 3), (K_CUR, 7),
@@ -103,12 +103,11 @@ REP_FIELDS = [  # 1 van ban, 2 so, 3 chon 1, 5 ngay, 7 checkbox
     ("TB/ngày 7 ngày (USD)", 2), ("Số dư TK (USD)", 2),
     ("Số liệu đến ngày", 5), ("Cập nhật lúc", 5), (K_KEY, 1),
 ]
-ACC_FIELDS = [
-    ("Tên Tk", 1), ("Advertiser ID", 1), ("Tên BC", 1), ("ID BC", 1), (K_KIND, 3),
-    ("Ngày", 5), ("Tuần", 3), ("Tháng", 3), ("Quý", 3), (K_CUR, 7),
-    ("Spend", 2), ("Tiền tệ", 1), ("Tỷ giá (1 USD)", 2), ("Spend (USD)", 2),
+ACC_FIELDS = [  # chi dong theo NGAY: 1 dong = 1 tai khoan x 1 ngay
+    ("Tên Tk", 1), ("Ngày", 5), ("Spend (USD)", 2), ("Spend", 2), ("Tiền tệ", 1), ("Tỷ giá (1 USD)", 2),
+    ("Tên BC", 1), ("ID BC", 1), ("Advertiser ID", 1), ("Tuần", 3), ("Tháng", 3), ("Quý", 3),
     ("Số dư hiện tại", 2), ("Quốc gia", 1), ("Múi giờ", 1), ("Loại hình QC", 1),
-    ("Số liệu đến ngày", 5), ("Cập nhật lúc", 5), (K_KEY, 1),
+    ("Cập nhật lúc", 5), (K_KEY, 1),
 ]
 # ---- Ket noi email TikTok (quan ly tu dien auth_code) ----
 T_CONNECT = "Kết nối email TikTok"
@@ -145,14 +144,13 @@ HELP = [
     ("Báo cáo BC", "Spend 7 ngày · TB/ngày 7 ngày", "Tổng 7 ngày gần nhất và trung bình mỗi ngày", "", _S),
     ("Báo cáo BC", "Số dư TK (USD)", "Tổng số dư còn lại của các tài khoản trong BC", "API số dư TikTok", _S),
     ("Báo cáo BC", "Số liệu đến ngày · Cập nhật lúc", "Số liệu tính đến ngày nào, ghi lúc mấy giờ", "Cập nhật trước 6h sáng mỗi ngày", _S),
-    ("Chi tiết acc", "Cách dùng", "Mỗi dòng = 1 tài khoản trong 1 ngày / 1 tháng / 1 quý", "Chọn chế độ xem 'Theo ngày' / 'Theo tháng' / 'Theo quý', rồi lọc Tháng/Quý/BC/Tên Tk. Đừng cộng lẫn các Loại kỳ với nhau", "—"),
-    ("Chi tiết acc", "Loại kỳ", "Ngày, Tháng hoặc Quý", "Dòng Ngày giữ 90 ngày gần nhất; dòng Tháng/Quý giữ mãi", _S),
-    ("Chi tiết acc", "Ngày · Tuần · Tháng · Quý", "Thời gian của dòng (dòng Tháng/Quý không có Ngày)", "Tuần theo ISO, thứ 2 → CN", _S),
-    ("Chi tiết acc", "Spend · Tiền tệ", "Số tiền tài khoản đã tiêu (tiền gốc)", "Báo cáo TikTok", _S),
-    ("Chi tiết acc", "Tỷ giá (1 USD) · Spend (USD)", "Tỷ giá đổi và số tiền ra USD", "Spend / tỷ giá (open.er-api.com)", _S),
-    ("Chi tiết acc", "Số dư hiện tại", "Số dư tài khoản lúc cập nhật (dòng ngày mới nhất và dòng kỳ hiện tại)", "API số dư TikTok", _S),
+    ("Chi tiết acc", "Cách dùng", "Mỗi dòng = 1 tài khoản tiêu bao nhiêu trong 1 ngày", "Chế độ xem 'Tất cả' = từng ngày; 'Tổng theo tháng' / 'Tổng theo quý' = nhóm theo tháng/quý rồi theo tài khoản, xem tổng ở dòng nhóm. Lọc thêm Tên BC / Tên Tk / Ngày tuỳ ý", "—"),
+    ("Chi tiết acc", "Ngày · Tuần · Tháng · Quý", "Ngày phát sinh chi tiêu và tuần/tháng/quý của ngày đó (để lọc, nhóm)", "Tuần theo ISO, thứ 2 → CN. Giữ 400 ngày gần nhất (~31.000 dòng, dưới giới hạn 50.000)", _S),
+    ("Chi tiết acc", "Spend (USD)", "Số tiền tài khoản tiêu trong ngày, đổi ra USD", "Spend / Tỷ giá", _S),
+    ("Chi tiết acc", "Spend · Tiền tệ · Tỷ giá (1 USD)", "Số tiền gốc theo tiền tệ của tài khoản và tỷ giá dùng để đổi", "Báo cáo TikTok; tỷ giá open.er-api.com", _S),
+    ("Chi tiết acc", "Số dư hiện tại", "Số dư tài khoản (chỉ ghi ở dòng ngày gần nhất)", "API số dư TikTok", _S),
     ("Chi tiết acc", "Quốc gia · Múi giờ · Loại hình QC", "Thị trường, múi giờ tài khoản, mục tiêu chiến dịch", "TikTok", _S),
-    ("Chi tiết acc", "Tài khoản lâu không dùng", "Không hiển thị", "Chỉ tài khoản có chi tiêu mới có dòng trong ngày/tháng/quý đó", "—"),
+    ("Chi tiết acc", "Tài khoản lâu không dùng", "Không hiển thị", "Chỉ ngày có chi tiêu mới có dòng", "—"),
     ("Kết nối email TikTok", "Email", "Email đang quản trị BC (để ghi nhớ)", "", _M),
     ("Kết nối email TikTok", "Mã auth_code", "Dán cả đường link sau khi bấm Uỷ quyền (hoặc riêng auth_code)", "Hệ thống tự kết nối trong ≤15 phút rồi ghi '✔ đã dùng'", _M),
     ("Kết nối email TikTok", "Trạng thái · Số BC · Danh sách BC", "Kết nối được chưa, thấy những BC nào", "", _S),
@@ -824,14 +822,16 @@ def prepare_tables(lark):
         if not tid:
             continue
         t = Table(lark, tid)
-        if K_KIND in t.types:
+        if name == T_REP and K_KIND in t.types:
             continue  # da la cau truc moi
+        if name == T_ACC and K_KEY in t.types and K_KIND not in t.types:
+            continue
         if name == T_REP and "Ngân sách tháng (USD)" in t.types:
             for _, fr in t.scan({"field_names": ["ID BC", "Ngân sách tháng (USD)"]}):
                 v = fr.get("Ngân sách tháng (USD)")
                 if v not in (None, ""):
                     old_budget[cell_text(fr.get("ID BC")).strip()] = float(v)
-        new = name + " (cũ)"
+        new = name + " (cũ)" if K_KIND not in t.types else "🗑 Có thể xoá - Chi tiết acc (bản trộn ngày/tháng/quý)"
         while new in tabs:
             new += " "
         rename_table(lark, tid, new)
@@ -859,6 +859,10 @@ def ensure_views(lark, tid, specs):
                     continue  # da co bo loc
             else:
                 vid = lark.call("POST", base + "/views", {"view_name": name, "view_type": "grid"}).get("view", {}).get("view_id")
+                if not conds:
+                    note(f"Tao che do xem '{name}'")
+            if not conds:
+                continue
             cl = []
             for col, val in conds:
                 f = fields[col]
@@ -979,8 +983,7 @@ def main():
             v = usd(r["spend"], cur)
             f = {"Tên Tk": b.get("name") or r.get("name") or adv, "Advertiser ID": adv,
                  "Tên BC": bc["name"], "ID BC": bc["bc_id"], "Spend": round(r["spend"], 2), "Tiền tệ": cur,
-                 "Quốc gia": a.get("country", ""), "Múi giờ": a.get("tz", ""),
-                 "Số liệu đến ngày": str(end), "Cập nhật lúc": now_ms}
+                 "Quốc gia": a.get("country", ""), "Múi giờ": a.get("tz", ""), "Cập nhật lúc": now_ms}
             if v is not None:
                 f["Tỷ giá (1 USD)"] = fx[cur]
                 f["Spend (USD)"] = round(v, 2)
@@ -1002,7 +1005,7 @@ def main():
             if r["date"] not in dates:
                 continue
             d = dt.date.fromisoformat(r["date"])
-            f.update({K_KIND: "Ngày", "Ngày": r["date"], "Tuần": week_label(r["date"]), "Tháng": month_lbl(d),
+            f.update({"Ngày": r["date"], "Tuần": week_label(r["date"]), "Tháng": month_lbl(d),
                       "Quý": quarter_lbl(d), K_KEY: f"{bc['bc_id']}|{adv}|{r['date']}"})
             if r["date"] == str(end):
                 f["Số dư hiện tại"] = bal.get(adv, {}).get("balance")
@@ -1016,18 +1019,6 @@ def main():
             rows = res["per"].get(p["label"], [])
             per_usd[p["label"]] = tot(rows)
             per_n[p["label"]] = sum(1 for r in rows if r["spend"] > 0)
-            for r in rows:
-                if r["spend"] <= 0:
-                    continue
-                adv = r["advertiser_id"]
-                f, _ = acc_base(adv, r)
-                f.update({K_KIND: p["kind"], K_CUR: p["cur"], "Quý": quarter_lbl(p["start"]),
-                          K_KEY: f"{bc['bc_id']}|{adv}|{p['label']}"})
-                if p["kind"] == "Tháng":
-                    f["Tháng"] = p["label"]
-                if p["cur"]:
-                    f["Số dư hiện tại"] = bal.get(adv, {}).get("balance")
-                acc_rows.append(f)
         tk_mtd[bc["bc_id"]] = per_usd[periods[0]["label"]]
 
         w7, p7 = tot(res["w7"]), tot(res["p7"])
@@ -1156,16 +1147,13 @@ def main():
         if k in want:
             ex_acc[k] = rid
     c2, u2 = acc.upsert(acc_rows, lambda f: (f[K_KEY],), ex_acc)
-    set_current_flags(acc, {f[K_KEY] for f in acc_rows if f.get(K_CUR)}, now_ms)
     trim_old(acc, "Ngày", KEEP_DETAIL_DAYS, T_ACC)
     note(f"Bang {T_ACC}: them moi {c2}, cap nhat {u2}.")
 
     ensure_views(lark, lark.find_table(T_REP), [
         ("Tháng này", [(K_KIND, "Tháng"), (K_CUR, True)]), ("Quý này", [(K_KIND, "Quý"), (K_CUR, True)]),
         ("Theo tháng", [(K_KIND, "Tháng")]), ("Theo quý", [(K_KIND, "Quý")])])
-    ensure_views(lark, lark.find_table(T_ACC), [
-        ("Theo ngày", [(K_KIND, "Ngày")]), ("Theo tháng", [(K_KIND, "Tháng")]), ("Theo quý", [(K_KIND, "Quý")]),
-        ("Tháng này", [(K_KIND, "Tháng"), (K_CUR, True)])])
+    ensure_views(lark, lark.find_table(T_ACC), [("Tổng theo tháng", []), ("Tổng theo quý", [])])
 
     audit(acc, tk_mtd, summary, periods[0]["label"])
     note(f"Xong sau {time.time() - t0:.0f}s. Hom qua {end}: {sum(s['y'] for s in summary):,.2f} USD | "
@@ -1175,7 +1163,7 @@ def main():
 
 def audit(acc, tk_mtd, summary, mlabel):
     """Doi soat: tong dong Ngày trong thang (Base) vs tong thang TikTok; dong trung."""
-    recs = acc.scan({"field_names": [K_KEY, K_KIND, "ID BC", "Tháng", "Spend (USD)"]})
+    recs = acc.scan({"field_names": [K_KEY, "ID BC", "Tháng", "Spend (USD)"]})
     seen, dup, base = set(), 0, {}
     total = len(recs)
     for _, fr in recs:
@@ -1184,7 +1172,7 @@ def audit(acc, tk_mtd, summary, mlabel):
             dup += 1
             continue
         seen.add(k)
-        if cell_text(fr.get(K_KIND)) == "Ngày" and cell_text(fr.get("Tháng")) == mlabel:
+        if cell_text(fr.get("Tháng")) == mlabel:
             b = cell_text(fr.get("ID BC"))
             base[b] = base.get(b, 0) + float(fr.get("Spend (USD)") or 0)
     bad = []
@@ -1193,7 +1181,7 @@ def audit(acc, tk_mtd, summary, mlabel):
         if abs(bv - tk) > max(1, 0.01 * tk):
             name = next((s["bc"]["name"] for s in summary if s["bc"]["bc_id"] == bcid), bcid)
             bad.append(f"{name}: Base {bv:,.2f} vs TikTok {tk:,.2f}")
-    note(f"KIEM TRA: bang {T_ACC} co {total} dong (gioi han 20.000), {dup} dong trung. Tong ngay thang {mlabel} vs TikTok: "
+    note(f"KIEM TRA: bang {T_ACC} co {total} dong (gioi han 50.000), {dup} dong trung. Tong ngay thang {mlabel} vs TikTok: "
          + ("KHOP tat ca BC." if not bad else f"{len(bad)} BC lech -> " + " | ".join(bad[:10])))
 
 
