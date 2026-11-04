@@ -831,7 +831,7 @@ def prepare_tables(lark):
                 v = fr.get("Ngân sách tháng (USD)")
                 if v not in (None, ""):
                     old_budget[cell_text(fr.get("ID BC")).strip()] = float(v)
-        new = name + " (cũ)" if K_KIND not in t.types else "🗑 Có thể xoá - Chi tiết acc (bản trộn ngày/tháng/quý)"
+        new = name + " (cũ)" if K_KIND not in t.types else "🗑 Có thể xoá - Chi tiết acc (bản trộn)"
         while new in tabs:
             new += " "
         rename_table(lark, tid, new)
