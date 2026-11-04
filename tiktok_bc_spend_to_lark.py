@@ -920,6 +920,8 @@ def main():
     low_days = float(os.getenv("LOW_BALANCE_DAYS", "3"))
     today = dt.datetime.now(VN_TZ).date()
     end = today - dt.timedelta(days=1)
+    if os.getenv("START_DATE"):  # lay lai tu 1 ngay co dinh (vd 2026-10-01)
+        days = max(1, min(KEEP_DETAIL_DAYS, (end - dt.date.fromisoformat(os.getenv("START_DATE"))).days + 1))
     start = end - dt.timedelta(days=days - 1)
     dates = [str(start + dt.timedelta(days=i)) for i in range(days)]
     prev = str(end - dt.timedelta(days=1))

@@ -50,9 +50,10 @@ jobs:
           TT_APP_SECRET: ${{ secrets.TT_APP_SECRET }}
           # Base "Cập nhật BC - LLC 2026 mới" (doi Base: sua dong duoi)
           LARK_BASE_TOKEN: "HckTbAdYSafGYXsBVTYl4cdVgde"
-          # sua file .run-now = chay lai tu dau nam (310 ngay, 10 thang, 3 quy)
-          DAYS_BACK: ${{ github.event.inputs.days_back || (github.event_name == 'push' && '310') || '2' }}
-          MONTHS_BACK: ${{ github.event.inputs.months_back || (github.event_name == 'push' && '10') || '1' }}
-          QUARTERS_BACK: ${{ (github.event_name == 'push' && '3') || '1' }}
+          # sua file .run-now = chay lai toan bo tu 01/10/2026
+          DAYS_BACK: ${{ github.event.inputs.days_back || '2' }}
+          START_DATE: ${{ (github.event_name == 'push' && '2026-10-01') || '' }}
+          MONTHS_BACK: ${{ github.event.inputs.months_back || '1' }}
+          QUARTERS_BACK: "1"
           PARALLEL: "3"
           FETCH_BALANCE: "1"
