@@ -1158,7 +1158,6 @@ def main():
     ensure_views(lark, lark.find_table(T_REP), [
         ("Tháng này", [(K_KIND, "Tháng"), (K_CUR, True)]), ("Quý này", [(K_KIND, "Quý"), (K_CUR, True)]),
         ("Theo tháng", [(K_KIND, "Tháng")]), ("Theo quý", [(K_KIND, "Quý")])])
-    ensure_views(lark, lark.find_table(T_ACC), [("Tổng theo tháng", []), ("Tổng theo quý", [])])
 
     audit(acc, tk_mtd, summary, periods[0]["label"])
     note(f"Xong sau {time.time() - t0:.0f}s. Hom qua {end}: {sum(s['y'] for s in summary):,.2f} USD | "
