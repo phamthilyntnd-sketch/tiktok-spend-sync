@@ -44,7 +44,7 @@ jobs:
           TT_ACCESS_TOKEN_8: ${{ secrets.TT_ACCESS_TOKEN_8 }}
           TT_ACCESS_TOKEN_9: ${{ secrets.TT_ACCESS_TOKEN_9 }}
           TT_ACCESS_TOKEN_10: ${{ secrets.TT_ACCESS_TOKEN_10 }}
-          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_ID: "cli_aa6046a046a11f04"  # app "TikTok Spend Sync - BC ads"
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
           TT_APP_ID: ${{ secrets.TT_APP_ID }}
           TT_APP_SECRET: ${{ secrets.TT_APP_SECRET }}
