@@ -461,7 +461,7 @@ class Lark:
             "app_id": env("LARK_APP_ID"), "app_secret": env("LARK_APP_SECRET")}, timeout=30)
         j = r.json()
         if j.get("code") != 0:
-            sys.exit(f"[LOI] Lark token: {j.get('code')} - {j.get('msg')}")
+            raise RuntimeError(f"Lark token (app {env('LARK_APP_ID')}): {j.get('code')} - {j.get('msg')}")
         self.h = {"Authorization": "Bearer " + j["tenant_access_token"],
                   "Content-Type": "application/json; charset=utf-8"}
         self.app = f"{LARK_API}/bitable/v1/apps/{env('LARK_BASE_TOKEN')}"
