@@ -675,7 +675,10 @@ def connect_emails(lark, only_new=False):
 
 
 def write_help(lark):
-    tbl = Table(lark, lark.ensure_table(T_HELP, H_FIELDS), H_FIELDS)
+    tid = lark.find_table(T_HELP)
+    if not tid:  # quan ly da xoa bang giai thich -> khong tao lai
+        return
+    tbl = Table(lark, tid, H_FIELDS)
     ex = {cell_text(fr.get("Mã")): rid for rid, fr in tbl.scan({"field_names": ["Mã"]})}
     rows = [{"Mã": f"{b}|{c}", "Bảng": b, "Cột": c, "Ý nghĩa": y, "Cách tính / nguồn": k, "Ai nhập": a,
              "Thứ tự": i + 1} for i, (b, c, y, k, a) in enumerate(HELP)]
