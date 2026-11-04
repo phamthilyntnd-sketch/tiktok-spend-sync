@@ -1,20 +1,22 @@
 name: TikTok BC spend -> Lark Base
 on:
   schedule:
-    - cron: "0 23 * * *"
+    # 04:37 va 05:37 gio VN (lan 2 de chac chan xong truoc 6h neu GitHub cham)
+    - cron: "37 21 * * *"
+    - cron: "37 22 * * *"
   push:
     branches: [main]
     paths: [".run-now"]
   workflow_dispatch:
     inputs:
       days_back:
-        description: "So ngay lay lai (1-62). Mac dinh 2"
+        description: "So ngay lay lai (1-90). Mac dinh 2"
         required: false
         default: "2"
       months_back:
-        description: "So thang truoc lay lai cho bang theo thang (0-12). Mac dinh 0"
+        description: "So thang truoc lay lai (1-24). Mac dinh 1"
         required: false
-        default: "0"
+        default: "1"
 concurrency:
   group: tiktok-sync
   cancel-in-progress: false
@@ -45,8 +47,9 @@ jobs:
           TT_APP_SECRET: ${{ secrets.TT_APP_SECRET }}
           # Base "Cập nhật BC - LLC 2026 mới" (doi Base: sua dong duoi)
           LARK_BASE_TOKEN: "HckTbAdYSafGYXsBVTYl4cdVgde"
-          # sua file .run-now = chay lai toan bo 60 ngay + 3 thang truoc
-          DAYS_BACK: ${{ github.event.inputs.days_back || (github.event_name == 'push' && '60') || '2' }}
-          MONTHS_BACK: ${{ github.event.inputs.months_back || (github.event_name == 'push' && '3') || '0' }}
+          # sua file .run-now = chay lai toan bo 90 ngay + 3 thang + 1 quy truoc
+          DAYS_BACK: ${{ github.event.inputs.days_back || (github.event_name == 'push' && '90') || '2' }}
+          MONTHS_BACK: ${{ github.event.inputs.months_back || (github.event_name == 'push' && '3') || '1' }}
+          QUARTERS_BACK: "1"
           PARALLEL: "3"
           FETCH_BALANCE: "1"
