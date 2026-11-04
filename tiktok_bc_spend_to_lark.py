@@ -421,11 +421,19 @@ def pct(a, b):
     return round((a - b) / b * 100, 1) if b else None
 
 
+NOTES = []
+
+
 def note(*args):
-    """In ra log + hien thanh ghi chu (annotation) tren trang GitHub Actions."""
+    """In ra log + gom lai thanh 1 ghi chu tong ket tren trang GitHub Actions."""
     msg = " ".join(str(a) for a in args)
     print(msg)
-    if os.getenv("GITHUB_ACTIONS"):
+    NOTES.append(msg)
+
+
+def flush_notes():
+    if os.getenv("GITHUB_ACTIONS") and NOTES:
+        msg = "\n".join(NOTES)
         print("::notice::" + msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A"))
 
 
@@ -843,10 +851,14 @@ def ensure_views(lark, tid, specs):
         print(f"   (khong doc duoc view: {e})")
         return
     for name, conds in specs:
-        if name in views:
-            continue
         try:
-            vid = lark.call("POST", base + "/views", {"view_name": name, "view_type": "grid"}).get("view", {}).get("view_id")
+            if name in views:
+                vid = views[name]
+                prop = (lark.call("GET", f"{base}/views/{vid}").get("view") or {}).get("property") or {}
+                if ((prop.get("filter_info") or {}).get("conditions")):
+                    continue  # da co bo loc
+            else:
+                vid = lark.call("POST", base + "/views", {"view_name": name, "view_type": "grid"}).get("view", {}).get("view_id")
             cl = []
             for col, val in conds:
                 f = fields[col]
@@ -860,7 +872,7 @@ def ensure_views(lark, tid, specs):
             lark.call("PATCH", f"{base}/views/{vid}", {"property": {"filter_info": {"conjunction": "and", "conditions": cl}}})
             note(f"Tao che do xem '{name}'")
         except (RuntimeError, KeyError) as e:
-            print(f"   (che do xem '{name}': {e})")
+            note(f"(che do xem '{name}' chua dat duoc bo loc: {e})")
 
 
 def set_current_flags(tbl, keys_true, now_ms):
@@ -938,6 +950,95 @@ def main():
 
     acc_rows, rep_rows, summary, no_cur = [], [], [], set()
     tk_mtd = {}
+    def handle(bc, res):
+        bal, attr, objs = res["bal"], res["attr"], res["obj"]
+        curmap = {}
+        for src in [res["daily"], res["w7"], res["p7"]] + list(res["per"].values()):
+            for r in src:
+                if r.get("currency"):
+                    curmap[r["advertiser_id"]] = r["currency"].upper()
+        for adv, a in attr.items():
+            if a.get("currency"):
+                curmap.setdefault(adv, a["currency"].upper())
+        for adv, b in bal.items():
+            if b.get("currency"):
+                curmap[adv] = b["currency"].upper()
+
+        def tot(rows):
+            s = 0.0
+            for r in rows:
+                v = usd(r["spend"], curmap.get(r["advertiser_id"]))
+                if v is None and r["spend"] > 0:
+                    no_cur.add(r["advertiser_id"])
+                s += v or 0
+            return s
+
+        def acc_base(adv, r):
+            b, a = bal.get(adv, {}), attr.get(adv, {})
+            cur = curmap.get(adv, "")
+            v = usd(r["spend"], cur)
+            f = {"Tên Tk": b.get("name") or r.get("name") or adv, "Advertiser ID": adv,
+                 "Tên BC": bc["name"], "ID BC": bc["bc_id"], "Spend": round(r["spend"], 2), "Tiền tệ": cur,
+                 "Quốc gia": a.get("country", ""), "Múi giờ": a.get("tz", ""),
+                 "Số liệu đến ngày": str(end), "Cập nhật lúc": now_ms}
+            if v is not None:
+                f["Tỷ giá (1 USD)"] = fx[cur]
+                f["Spend (USD)"] = round(v, 2)
+            return f, v
+
+        # --- dong Ngày ---
+        day_usd = {str(end): 0.0, prev: 0.0}
+        n_y, seen = 0, set()
+        for r in res["daily"]:
+            if r["spend"] <= 0 or (r["advertiser_id"], r["date"]) in seen:
+                continue
+            seen.add((r["advertiser_id"], r["date"]))
+            adv = r["advertiser_id"]
+            f, v = acc_base(adv, r)
+            if r["date"] in day_usd:
+                day_usd[r["date"]] += v or 0
+            if r["date"] == str(end):
+                n_y += 1
+            if r["date"] not in dates:
+                continue
+            d = dt.date.fromisoformat(r["date"])
+            f.update({K_KIND: "Ngày", "Ngày": r["date"], "Tuần": week_label(r["date"]), "Tháng": month_lbl(d),
+                      "Quý": quarter_lbl(d), K_KEY: f"{bc['bc_id']}|{adv}|{r['date']}"})
+            if r["date"] == str(end):
+                f["Số dư hiện tại"] = bal.get(adv, {}).get("balance")
+                if adv in objs:
+                    f["Loại hình QC"] = fmt_objectives(objs[adv])
+            acc_rows.append(f)
+
+        # --- dong Tháng / Quý cho tung tai khoan ---
+        per_usd, per_n = {}, {}
+        for p in periods:
+            rows = res["per"].get(p["label"], [])
+            per_usd[p["label"]] = tot(rows)
+            per_n[p["label"]] = sum(1 for r in rows if r["spend"] > 0)
+            for r in rows:
+                if r["spend"] <= 0:
+                    continue
+                adv = r["advertiser_id"]
+                f, _ = acc_base(adv, r)
+                f.update({K_KIND: p["kind"], K_CUR: p["cur"], "Quý": quarter_lbl(p["start"]),
+                          K_KEY: f"{bc['bc_id']}|{adv}|{p['label']}"})
+                if p["kind"] == "Tháng":
+                    f["Tháng"] = p["label"]
+                if p["cur"]:
+                    f["Số dư hiện tại"] = bal.get(adv, {}).get("balance")
+                acc_rows.append(f)
+        tk_mtd[bc["bc_id"]] = per_usd[periods[0]["label"]]
+
+        w7, p7 = tot(res["w7"]), tot(res["p7"])
+        bal_usd = sum(usd(float(b["balance"]), b.get("currency")) or 0
+                      for b in bal.values() if b.get("balance") not in (None, ""))
+        summary.append({"bc": bc, "y": day_usd[str(end)], "p": day_usd[prev], "w7": w7, "p7": p7,
+                        "avg7": w7 / 7, "n_y": n_y, "bal": bal_usd if bal else None, "n_all": len(bal) or None,
+                        "per": per_usd, "per_n": per_n})
+        print(f"BC {bc['name']}: hom qua {day_usd[str(end)]:,.2f} USD | thang {per_usd[periods[0]['label']]:,.2f} USD")
+
+    failed = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(process_bc, bc, fetch_start, str(end), bc["tokens"], with_balance, periods): bc for bc in bcs}
         for fu in as_completed(futs):
@@ -945,94 +1046,17 @@ def main():
             try:
                 res = fu.result()
             except Exception as e:
-                print(f"[BO QUA] BC {bc['bc_id']} ({bc['name']}): {e}")
+                failed.append(bc)
+                print(f"[THU LAI SAU] BC {bc['bc_id']} ({bc['name']}): {e}")
                 continue
-            bal, attr, objs = res["bal"], res["attr"], res["obj"]
-            curmap = {}
-            for src in [res["daily"], res["w7"], res["p7"]] + list(res["per"].values()):
-                for r in src:
-                    if r.get("currency"):
-                        curmap[r["advertiser_id"]] = r["currency"].upper()
-            for adv, a in attr.items():
-                if a.get("currency"):
-                    curmap.setdefault(adv, a["currency"].upper())
-            for adv, b in bal.items():
-                if b.get("currency"):
-                    curmap[adv] = b["currency"].upper()
-
-            def tot(rows):
-                s = 0.0
-                for r in rows:
-                    v = usd(r["spend"], curmap.get(r["advertiser_id"]))
-                    if v is None and r["spend"] > 0:
-                        no_cur.add(r["advertiser_id"])
-                    s += v or 0
-                return s
-
-            def acc_base(adv, r):
-                b, a = bal.get(adv, {}), attr.get(adv, {})
-                cur = curmap.get(adv, "")
-                v = usd(r["spend"], cur)
-                f = {"Tên Tk": b.get("name") or r.get("name") or adv, "Advertiser ID": adv,
-                     "Tên BC": bc["name"], "ID BC": bc["bc_id"], "Spend": round(r["spend"], 2), "Tiền tệ": cur,
-                     "Quốc gia": a.get("country", ""), "Múi giờ": a.get("tz", ""),
-                     "Số liệu đến ngày": str(end), "Cập nhật lúc": now_ms}
-                if v is not None:
-                    f["Tỷ giá (1 USD)"] = fx[cur]
-                    f["Spend (USD)"] = round(v, 2)
-                return f, v
-
-            # --- dong Ngày ---
-            day_usd = {str(end): 0.0, prev: 0.0}
-            n_y, seen = 0, set()
-            for r in res["daily"]:
-                if r["spend"] <= 0 or (r["advertiser_id"], r["date"]) in seen:
-                    continue
-                seen.add((r["advertiser_id"], r["date"]))
-                adv = r["advertiser_id"]
-                f, v = acc_base(adv, r)
-                if r["date"] in day_usd:
-                    day_usd[r["date"]] += v or 0
-                if r["date"] == str(end):
-                    n_y += 1
-                if r["date"] not in dates:
-                    continue
-                d = dt.date.fromisoformat(r["date"])
-                f.update({K_KIND: "Ngày", "Ngày": r["date"], "Tuần": week_label(r["date"]), "Tháng": month_lbl(d),
-                          "Quý": quarter_lbl(d), K_KEY: f"{bc['bc_id']}|{adv}|{r['date']}"})
-                if r["date"] == str(end):
-                    f["Số dư hiện tại"] = bal.get(adv, {}).get("balance")
-                    if adv in objs:
-                        f["Loại hình QC"] = fmt_objectives(objs[adv])
-                acc_rows.append(f)
-
-            # --- dong Tháng / Quý cho tung tai khoan ---
-            per_usd, per_n = {}, {}
-            for p in periods:
-                rows = res["per"].get(p["label"], [])
-                per_usd[p["label"]] = tot(rows)
-                per_n[p["label"]] = sum(1 for r in rows if r["spend"] > 0)
-                for r in rows:
-                    if r["spend"] <= 0:
-                        continue
-                    adv = r["advertiser_id"]
-                    f, _ = acc_base(adv, r)
-                    f.update({K_KIND: p["kind"], K_CUR: p["cur"], "Quý": quarter_lbl(p["start"]),
-                              K_KEY: f"{bc['bc_id']}|{adv}|{p['label']}"})
-                    if p["kind"] == "Tháng":
-                        f["Tháng"] = p["label"]
-                    if p["cur"]:
-                        f["Số dư hiện tại"] = bal.get(adv, {}).get("balance")
-                    acc_rows.append(f)
-            tk_mtd[bc["bc_id"]] = per_usd[periods[0]["label"]]
-
-            w7, p7 = tot(res["w7"]), tot(res["p7"])
-            bal_usd = sum(usd(float(b["balance"]), b.get("currency")) or 0
-                          for b in bal.values() if b.get("balance") not in (None, ""))
-            summary.append({"bc": bc, "y": day_usd[str(end)], "p": day_usd[prev], "w7": w7, "p7": p7,
-                            "avg7": w7 / 7, "n_y": n_y, "bal": bal_usd if bal else None, "n_all": len(bal) or None,
-                            "per": per_usd, "per_n": per_n})
-            print(f"BC {bc['name']}: hom qua {day_usd[str(end)]:,.2f} USD | thang {per_usd[periods[0]['label']]:,.2f} USD")
+            handle(bc, res)
+    for bc in failed:  # thu lai tuan tu cac BC loi (thuong do vuot gioi han goi API)
+        time.sleep(10)
+        try:
+            handle(bc, process_bc(bc, fetch_start, str(end), bc["tokens"], with_balance, periods))
+            note(f"BC {bc['name']}: lan dau loi, thu lai thanh cong")
+        except Exception as e:
+            note(f"[BO QUA] BC {bc['bc_id']} ({bc['name']}): {e}")
 
     if no_cur:
         print(f"[CANH BAO] {len(no_cur)} TK chua biet tien te: {', '.join(sorted(no_cur)[:20])}")
@@ -1179,3 +1203,5 @@ if __name__ == "__main__":
     except RuntimeError as e:
         note(f"LOI: {e}")
         raise
+    finally:
+        flush_notes()
