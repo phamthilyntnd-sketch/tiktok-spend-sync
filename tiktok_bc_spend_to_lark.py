@@ -60,6 +60,7 @@ F_OBJ = "Loại hình QC"
 ALIASES = {
     F_SPEND: ["Spend (USD & VNĐ)", "Spend"],
     F_SPEND_USD: ["Spend trong ngày (USD)", "Spend (USD)"],
+    "Tăng trưởng (tuần)": ["Tăng trưởng (tuần) %", "Tăng trưởng (tuần)"],
 }
 
 # ---- Bang Tong hop BC ----
